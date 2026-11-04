@@ -34,7 +34,7 @@ def run(cmd, timeout=3600):
 def run_checked(cmd, error_prefix, timeout=3600):
     code, stdout, stderr = run(cmd, timeout)
     if code != 0:
-        raise JobError(f"{error_prefix}: {stderr.strip()[-1500:]}")
+        raise JobError(f"{error_prefix} (exit {code}): {stderr.strip()[-1500:]}")
     return stdout
 
 
@@ -172,7 +172,7 @@ def fetch_metadata(video_id):
         # yt-dlp fails outright for scheduled streams and premieres instead of reporting live_status.
         if "live event will begin" in stderr or "Premieres in" in stderr:
             raise JobError("not_ready")
-        raise JobError(f"metadata failed: {stderr.strip()[-1500:]}")
+        raise JobError(f"metadata failed (exit {code}): {stderr.strip()[-1500:]}")
     info = json.loads(stdout)
     if info.get("live_status") in NOT_READY_STATES:
         raise JobError("not_ready")

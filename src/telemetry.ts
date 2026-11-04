@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/cloudflare";
-import type { WorkflowStepConfig, WorkflowStepContext } from "cloudflare:workers";
+import { SentrySpan } from "@sentry/core";
+import type { WorkflowSleepDuration, WorkflowStepConfig, WorkflowStepContext } from "cloudflare:workers";
 import type { Env } from "./env";
 
 const KB = (base64Length: number) => Math.round((base64Length * 3) / 4 / 1024);
@@ -15,6 +16,8 @@ const PRICES: Record<string, { input: number; output?: number }> = {
 
 export const WHISPER = "@cf/openai/whisper-large-v3-turbo";
 const WHISPER_USD_PER_MINUTE = 0.0005;
+/** The step that keeps a phase's span id and start. It has no work to show. */
+const PHASE_START = /^phase:/;
 
 /** No DSN turns Sentry off. */
 export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
@@ -22,7 +25,7 @@ export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
   tracesSampleRate: 1,
   environment: "production",
   // The SDK records no audio length for whisper, so `transcribeSpan` makes the whisper span.
-  ignoreSpans: [{ name: `chat ${WHISPER}` }],
+  ignoreSpans: [{ name: `chat ${WHISPER}` }, { name: PHASE_START }],
   integrations: [{
     name: "ScopeAttributes",
     setup(client) {
@@ -70,20 +73,27 @@ export const step = <T>(name: string, fn: () => Promise<T>, attributes?: Record<
 /** The steps inside a phase. Each one passes a config, so `do` needs only that overload. */
 export type PhaseStep = {
   do<T extends Rpc.Serializable<T>>(name: string, config: WorkflowStepConfig, callback: (ctx: WorkflowStepContext) => Promise<T>): Promise<T>;
+  sleep(name: string, duration: WorkflowSleepDuration): Promise<void>;
 };
 
 /**
  * Groups Workflow steps under one span. Each step stays its own segment, so its name still names the spans in it,
- * and points to the phase as its parent. A replay returns finished steps without running them, so the phase is
- * sent only when one of its steps ran.
+ * and points to the phase as its parent. The Worker can restart inside a phase, for example at a sleep, so the
+ * phase's span id and start time come from a step: every restart gets them back, and steps from all restarts
+ * point to the same phase. A replay returns finished steps without running them, so the phase is sent only by
+ * the run that ends it after one of its steps ran.
  */
-export function phase<T>(
+export async function phase<T>(
   name: string,
   step: PhaseStep,
   fn: (step: PhaseStep) => Promise<T>,
   attributes?: Record<string, string | number | boolean>,
 ): Promise<T> {
-  const span = Sentry.startInactiveSpan({ name, op: "workflow.phase", attributes, parentSpan: null });
+  const key = [name, ...Object.values(attributes ?? {})].join(":");
+  const { spanId, startedAt } = await step.do(`phase:${key}`, {}, async () => ({
+    spanId: crypto.randomUUID().replace(/-/g, "").slice(0, 16),
+    startedAt: Date.now(),
+  }));
   let ran = false;
   const tracked: PhaseStep = {
     do: (stepName, config, callback) =>
@@ -91,16 +101,20 @@ export function phase<T>(
         ran = true;
         return callback(ctx);
       }),
+    sleep: (stepName, duration) => step.sleep(stepName, duration),
   };
   return Sentry.withScope(async (scope) => {
-    scope.setPropagationContext({ ...scope.getPropagationContext(), parentSpanId: span.spanContext().spanId });
+    const context = scope.getPropagationContext();
+    scope.setPropagationContext({ ...context, parentSpanId: spanId });
+    const span = () =>
+      new SentrySpan({ traceId: context.traceId, spanId, name, op: "workflow.phase", attributes, startTimestamp: startedAt / 1000, sampled: true });
     try {
-      return await fn(tracked);
+      const result = await fn(tracked);
+      if (ran) span().end();
+      return result;
     } catch (err) {
-      span.setStatus({ code: 2, message: "internal_error" });
+      if (ran) span().setStatus({ code: 2, message: "internal_error" }).end();
       throw err;
-    } finally {
-      if (ran) span.end();
     }
   });
 }

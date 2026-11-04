@@ -111,26 +111,18 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     if (!config) throw new NonRetryableError(`unknown source ${sourceId}`);
     const detectors = config.detectors.map(getDetector);
 
-    const manifest = await this.extract(videoId, step);
+    const manifest = await phase("extract", step, (step) => this.extract(videoId, step));
     if (typeof manifest === "string") return manifest;
-
-    await step.do("save-metadata", IO_STEP, async () => {
-      await env.DB.prepare(
-        `UPDATE videos SET title = COALESCE(title, ?), duration = COALESCE(?, duration),
-         published_at = COALESCE(published_at, ?) WHERE id = ?`,
-      )
-        .bind(manifest.title, manifest.duration, isoOrNull(manifest.publishedAt), videoId)
-        .run();
-    });
 
     const isShort = manifest.duration != null && manifest.duration < MIN_DURATION_SECONDS;
     const mentions: Mention[] = [];
     const timeline = frameTimeline(manifest.frames, manifest.keptSeconds);
 
-    if (!isShort && !manifest.hasCaptions) {
-      await phase("transcribe", step, (step) => this.transcribeAudio(videoId, audioChunkCount(manifest), step));
-    }
-    await step.do("keep-transcript", IO_STEP, () => this.keepTranscript(videoId, manifest.hasCaptions ? "captions" : "whisper"));
+    const origin = manifest.hasCaptions ? "captions" : "whisper";
+    await phase("transcribe", step, async (step) => {
+      if (!isShort && !manifest.hasCaptions) await this.transcribeAudio(videoId, audioChunkCount(manifest), step);
+      await step.do("keep-transcript", IO_STEP, () => this.keepTranscript(videoId, origin));
+    }, { "app.transcript_origin": origin });
 
     if (!isShort) {
       for (const detector of detectors) {
@@ -190,7 +182,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     return { state, stage: job.stage ?? null, uploaded: job.uploaded, total: job.total, error: job.error ?? null, manifest };
   }
 
-  private async extract(videoId: string, step: WorkflowStep): Promise<Manifest | NotReady> {
+  private async extract(videoId: string, step: PhaseStep): Promise<Manifest | NotReady> {
     await step.do("extract-start", START_STEP, () => this.startJob(videoId));
     for (let i = 0; i < MAX_POLLS; i++) {
       await step.sleep(`extract-wait-${i}`, POLL_INTERVAL);
@@ -202,8 +194,17 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         if (BOT_CHECK.test(job.error ?? "")) return "bot_check";
         throw new NonRetryableError(`extract failed at ${job.stage}: ${job.error}`);
       }
-      if (!job.manifest) throw new NonRetryableError("extract finished without a manifest");
-      return job.manifest;
+      const { manifest } = job;
+      if (!manifest) throw new NonRetryableError("extract finished without a manifest");
+      await step.do("save-metadata", IO_STEP, async () => {
+        await this.env.DB.prepare(
+          `UPDATE videos SET title = COALESCE(title, ?), duration = COALESCE(?, duration),
+           published_at = COALESCE(published_at, ?) WHERE id = ?`,
+        )
+          .bind(manifest.title, manifest.duration, isoOrNull(manifest.publishedAt), videoId)
+          .run();
+      });
+      return manifest;
     }
     throw new NonRetryableError("extract did not finish within 90 minutes");
   }

@@ -11,7 +11,8 @@
   "dependencies": {
     "@cloudflare/containers": "^0.3.0",
     "@resvg/resvg-wasm": "^2.6.2",
-    "@sentry/cloudflare": "^11.10.0"
+    "@sentry/cloudflare": "^11.10.0",
+    "@sentry/core": "11.10.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261001.0",

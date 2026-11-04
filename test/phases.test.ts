@@ -14,6 +14,7 @@ type Span = {
   trace_id: string;
   parent_span_id?: string;
   is_segment: boolean;
+  start_timestamp: number;
   attributes: Record<string, { value: unknown }>;
 };
 
@@ -47,16 +48,20 @@ function engine() {
   };
 }
 
-test("workflow steps nest under one phase span each, with no empty phase spans on replay", async () => {
+test("workflow steps nest under one phase span each, also across a restart, with no empty phase spans on replay", async () => {
   const { sent, options, named, attribute } = capture();
   const config = { retries: { limit: 1, delay: "1 second", backoff: "constant" } } as const;
   class Fixture {
-    async run(_event: unknown, step: PhaseStep & { sleep(name: string, duration: string): Promise<void> }) {
+    async run(_event: unknown, step: PhaseStep) {
+      await phase("extract", step, async (step) => {
+        await step.do("extract-start", config, async () => 0);
+        await step.sleep("extract-wait", "1 second");
+        await step.do("extract-poll", config, async () => 1);
+      });
       await phase("transcribe", step, async (step) => {
         await step.do("transcribe-0", config, async () => 1);
         await step.do("transcribe-1", config, async () => 2);
       });
-      await step.sleep("wait", "1 second");
       await phase("store", step, (step) => step.do("store-db", config, async () => 3));
     }
   }
@@ -69,16 +74,21 @@ test("workflow steps nest under one phase span each, with no empty phase spans o
   void new Workflow(ctx, {}).run(event, step as never);
   await new Promise((resolve) => setTimeout(resolve, 50));
   await new Workflow(ctx, {}).run(event, step as never);
+  await new Workflow(ctx, {}).run(event, step as never);
   await Promise.all(pending);
 
   const phases = sent.filter((span) => attribute(span, "sentry.op") === "workflow.phase");
-  expect(phases.map((span) => span.name)).toEqual(["transcribe", "store"]);
-  const [transcribe, store] = phases;
-  for (const name of ["transcribe-0", "transcribe-1"]) {
-    expect(named(name)).toHaveLength(1);
-    expect(named(name)[0]).toMatchObject({ parent_span_id: transcribe.span_id, is_segment: true });
+  expect(phases.map((span) => span.name)).toEqual(["extract", "transcribe", "store"]);
+  const [extract, transcribe, store] = phases;
+  for (const [parent, names] of [[extract, ["extract-start", "extract-poll"]], [transcribe, ["transcribe-0", "transcribe-1"]]] as const) {
+    for (const name of names) {
+      expect(named(name)).toHaveLength(1);
+      expect(named(name)[0]).toMatchObject({ parent_span_id: parent.span_id, is_segment: true });
+    }
   }
+  expect(extract.start_timestamp).toBeLessThanOrEqual(named("extract-start")[0].start_timestamp);
   expect(named("store-db")[0].parent_span_id).toBe(store.span_id);
+  expect(sent.filter((span) => span.name.startsWith("phase:"))).toHaveLength(0);
   expect(new Set(sent.map((span) => span.trace_id)).size).toBe(1);
 });
 

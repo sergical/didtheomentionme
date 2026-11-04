@@ -1,4 +1,4 @@
-import { getActiveSpan, instrumentWorkflowWithSentry } from "@sentry/cloudflare";
+import { captureException, captureMessage, getActiveSpan, instrumentWorkflowWithSentry } from "@sentry/cloudflare";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { detectFrame, embed, findQuoteSpan, pool, readAloudProbability, readFrame, transcribe } from "./ai";
@@ -22,7 +22,7 @@ import {
 } from "./pipeline";
 import { UPLOAD_HOST } from "./container";
 import { sentryOptions, step as traceStep } from "./telemetry";
-import { containerFetch, destroyContainer, isoOrNull, setStatus } from "./videos";
+import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
 
 const DETECT_BATCH = 120;
 const DETECT_CONCURRENCY = 12;
@@ -70,31 +70,49 @@ type Mention = PostGroup & {
 /** YouTube asks some downloads to sign in while others from the same app pass, so a later attempt can work. */
 const BOT_CHECK = /confirm you.re not a bot/i;
 
+type NotReady = "not_ready" | "bot_check";
+
 const key = (videoId: string, path: string) => `videos/${videoId}/${path}`;
+const transcriptKey = (videoId: string) => `transcripts/${videoId}.json`;
 
 class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
   async run(event: WorkflowEvent<VideoParams>, step: WorkflowStep): Promise<void> {
     const { videoId, source } = event.payload;
-    if (!getSource(source)) throw new NonRetryableError(`unknown source ${source}`);
-
+    const env = this.env;
+    const { instanceId } = event;
     try {
-      await step.do("mark-processing", IO_STEP, () => setStatus(this.env, videoId, "processing"));
+      await step.do("mark-processing", IO_STEP, async () => {
+        await startRun(env, videoId, instanceId);
+        await setStatus(env, videoId, "processing");
+      });
       const outcome = await this.process(videoId, source, step);
-      const note = outcome === "pending" ? "not ready yet, will retry" : null;
-      await step.do("mark-final", IO_STEP, () => setStatus(this.env, videoId, outcome, note));
+      const pending = outcome === "not_ready" || outcome === "bot_check";
+      await step.do("mark-final", IO_STEP, async () => {
+        // endRun writes once, so it goes last: a failed status write must leave the run open for mark-error.
+        await setStatus(env, videoId, pending ? "pending" : outcome, pending ? "not ready yet, will retry" : null);
+        await endRun(env, instanceId, outcome);
+        if (pending) captureMessage(`${videoId} not ready: ${outcome}`, { level: "warning", tags: { "video.id": videoId, "video.not_ready": outcome } });
+      });
     } catch (err) {
       const message = String((err as Error)?.message ?? err).slice(0, 500);
-      await step.do("mark-error", IO_STEP, () => setStatus(this.env, videoId, "error", message));
+      await step.do("mark-error", IO_STEP, async () => {
+        await endRun(env, instanceId, "error", message);
+        await setStatus(env, videoId, "error", message);
+        // The Sentry step wrapper reports an error only after the step's last retry, so it never sees these.
+        if (err instanceof NonRetryableError) captureException(err, { tags: { "video.id": videoId } });
+      });
       throw err;
     }
   }
 
-  private async process(videoId: string, sourceId: string, step: WorkflowStep): Promise<"done" | "skipped" | "pending"> {
+  private async process(videoId: string, sourceId: string, step: WorkflowStep): Promise<"done" | "skipped" | NotReady> {
     const env = this.env;
-    const detectors = getSource(sourceId)!.detectors.map(getDetector);
+    const config = getSource(sourceId);
+    if (!config) throw new NonRetryableError(`unknown source ${sourceId}`);
+    const detectors = config.detectors.map(getDetector);
 
     const manifest = await this.extract(videoId, step);
-    if (manifest === "not_ready") return "pending";
+    if (typeof manifest === "string") return manifest;
 
     await step.do("save-metadata", IO_STEP, async () => {
       await env.DB.prepare(
@@ -109,9 +127,10 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     const mentions: Mention[] = [];
     const timeline = frameTimeline(manifest.frames, manifest.keptSeconds);
 
-    if (!isShort) {
-      if (!manifest.hasCaptions) await this.transcribeAudio(videoId, audioChunkCount(manifest), step);
+    if (!isShort && !manifest.hasCaptions) await this.transcribeAudio(videoId, audioChunkCount(manifest), step);
+    await step.do("keep-transcript", IO_STEP, () => this.keepTranscript(videoId, manifest.hasCaptions ? "captions" : "whisper"));
 
+    if (!isShort) {
       for (const detector of detectors) {
         const probs = await this.detect(videoId, detector, manifest, timeline, step);
         for (const run of findRuns(probs, detector.frameThreshold)) {
@@ -164,7 +183,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     return { state, stage: job.stage ?? null, uploaded: job.uploaded, total: job.total, error: job.error ?? null, manifest };
   }
 
-  private async extract(videoId: string, step: WorkflowStep): Promise<Manifest | "not_ready"> {
+  private async extract(videoId: string, step: WorkflowStep): Promise<Manifest | NotReady> {
     await step.do("extract-start", START_STEP, () => this.startJob(videoId));
     for (let i = 0; i < MAX_POLLS; i++) {
       await step.sleep(`extract-wait-${i}`, POLL_INTERVAL);
@@ -172,7 +191,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       if (job.state === "running") continue;
       await step.do("extract-release", IO_STEP, () => destroyContainer(this.env, videoId));
       if (job.state === "error") {
-        if (job.error === "not_ready" || BOT_CHECK.test(job.error ?? "")) return "not_ready";
+        if (job.error === "not_ready") return "not_ready";
+        if (BOT_CHECK.test(job.error ?? "")) return "bot_check";
         throw new NonRetryableError(`extract failed at ${job.stage}: ${job.error}`);
       }
       if (!job.manifest) throw new NonRetryableError("extract finished without a manifest");
@@ -238,6 +258,17 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
   private async loadWords(videoId: string): Promise<Word[]> {
     const object = await this.env.BUCKET.get(key(videoId, "words.json"));
     return object ? await object.json<Word[]>() : [];
+  }
+
+  /** Cleanup deletes the video's prefix, so the transcript is kept outside it for bots to read later. */
+  private async keepTranscript(videoId: string, origin: "captions" | "whisper"): Promise<number> {
+    const words = await this.loadWords(videoId);
+    if (words.length) {
+      await this.env.BUCKET.put(transcriptKey(videoId), JSON.stringify({ videoId, origin, words }), {
+        httpMetadata: { contentType: "application/json" },
+      });
+    }
+    return words.length;
   }
 
   private async readAloud(videoId: string, detector: Detector, run: Run, posts: PostGroup[]): Promise<Mention[]> {

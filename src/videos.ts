@@ -36,6 +36,19 @@ export async function setStatus(env: Env, videoId: string, status: string, error
     .run();
 }
 
+/** One row per workflow instance. `videos.error` is cleared by the next success; these rows are not. */
+export async function startRun(env: Env, videoId: string, instanceId: string): Promise<void> {
+  await env.DB.prepare("INSERT INTO video_runs (instance_id, video_id, started_at) VALUES (?, ?, ?) ON CONFLICT(instance_id) DO NOTHING")
+    .bind(instanceId, videoId, now())
+    .run();
+}
+
+export async function endRun(env: Env, instanceId: string, outcome: string, reason: string | null = null): Promise<void> {
+  await env.DB.prepare("UPDATE video_runs SET outcome = ?, reason = ?, ended_at = ? WHERE instance_id = ? AND ended_at IS NULL")
+    .bind(outcome, reason, now(), instanceId)
+    .run();
+}
+
 /** Inserts an unknown video as pending. An existing row keeps its status. */
 async function insertPending(env: Env, source: string, v: VideoInfo): Promise<boolean> {
   const result = await env.DB.prepare(
@@ -164,9 +177,12 @@ export async function reconcileProcessing(env: Env): Promise<void> {
     try {
       const { latest } = await probeInstances(env, row.id);
       if (latest && !FINISHED.has((await latest.status()).status)) continue;
+      const reason = "workflow ended without a final status";
+      // The video update removes the row from the next SELECT, so the run must be closed first.
+      if (latest) await endRun(env, latest.id, "error", reason);
       // The workflow can write its final status after the SELECT above, so only a row still 'processing' changes.
       await env.DB.prepare("UPDATE videos SET status = 'error', error = ?, updated_at = ? WHERE id = ? AND status = 'processing'")
-        .bind("workflow ended without a final status", now(), row.id)
+        .bind(reason, now(), row.id)
         .run();
     } catch (err) {
       console.error(`reconcile ${row.id} failed`, err);

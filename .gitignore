@@ -1,0 +1,6 @@
+node_modules
+.wrangler
+.dev.vars
+experiments/data
+__pycache__
+docs/demo.md

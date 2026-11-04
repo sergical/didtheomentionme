@@ -138,35 +138,60 @@ export async function backfill(env: Env, source: Source, days: number): Promise<
 }
 
 const FINISHED = new Set(["complete", "errored", "terminated"]);
+const NO_FINAL_STATUS = "workflow ended without a final status";
+/** How long an open run without a workflow instance counts as a start that is still creating it. */
+const CLAIM_LEASE_MS = 10 * 60_000;
 
 /**
- * Instance ids are `<videoId>`, then `<videoId>_1`, `<videoId>_2`, ... A finished instance keeps its id
- * forever, so a video that goes back to pending (not_ready, manual retry) needs the next id. Only the
- * latest instance can still be running.
+ * Workflows deletes finished instances after its retention period and then accepts their ids again. The Sentry
+ * trace id comes from the instance id, so every run gets a new id and `video_runs` keeps the history.
  */
-async function probeInstances(env: Env, videoId: string) {
-  // Instance ids cannot start with "-", but YouTube ids can. "v" + 11 characters cannot clash with a real id.
+function newInstanceId(videoId: string): string {
+  // Instance ids cannot start with "-", but YouTube ids can.
   const base = videoId.startsWith("-") ? `v${videoId}` : videoId;
-  const instanceId = (n: number) => (n === 0 ? base : `${base}_${n}`);
-  let n = 0;
-  let latest: WorkflowInstance | null = null;
-  for (;;) {
-    const instance = await env.VIDEO_WORKFLOW.get(instanceId(n)).catch(() => null);
-    if (!instance) break;
-    latest = instance;
-    n++;
-  }
-  return { latest, nextId: instanceId(n) };
+  return `${base}_${Date.now().toString(36)}${crypto.randomUUID().slice(0, 4)}`;
+}
+
+/**
+ * Whether the open run of a video can still write a final status. A run that cannot is closed here, by its own
+ * id, so a concurrent start that has just written a new run is never closed by mistake.
+ */
+async function runActive(env: Env, videoId: string): Promise<boolean> {
+  const run = await env.DB.prepare("SELECT instance_id, started_at FROM video_runs WHERE video_id = ? AND ended_at IS NULL")
+    .bind(videoId)
+    .first<{ instance_id: string; started_at: string }>();
+  if (!run) return false;
+  const instance = await env.VIDEO_WORKFLOW.get(run.instance_id).catch((err) => {
+    if (String((err as Error)?.message).includes("instance.not_found")) return null;
+    throw err;
+  });
+  if (instance && !FINISHED.has((await instance.status()).status)) return true;
+  if (!instance && Date.now() - Date.parse(run.started_at) < CLAIM_LEASE_MS) return true;
+  await endRun(env, run.instance_id, "error", NO_FINAL_STATUS);
+  return false;
 }
 
 export async function startWorkflow(env: Env, videoId: string, source: string): Promise<"started" | "running"> {
-  const { latest, nextId } = await probeInstances(env, videoId);
-  if (latest && !FINISHED.has((await latest.status()).status)) return "running";
-  await step("start workflow", () => env.VIDEO_WORKFLOW.create({ id: nextId, params: { videoId, source } }), {
-    "video.id": videoId,
-    "workflow.instance_id": nextId,
-    "workflow.trace_id": await workflowTraceId(nextId),
-  });
+  if (await runActive(env, videoId)) return "running";
+  const id = newInstanceId(videoId);
+  // The open run row is the lock: a start writes it before it creates the instance, and only one can be open.
+  const claim = await env.DB.prepare(
+    `INSERT INTO video_runs (instance_id, video_id, started_at) SELECT ?, ?, ?
+     WHERE NOT EXISTS (SELECT 1 FROM video_runs WHERE video_id = ? AND ended_at IS NULL)`,
+  )
+    .bind(id, videoId, now(), videoId)
+    .run();
+  if (!claim.meta.changes) return "running";
+  try {
+    await step("start workflow", () => env.VIDEO_WORKFLOW.create({ id, params: { videoId, source } }), {
+      "video.id": videoId,
+      "workflow.instance_id": id,
+      "workflow.trace_id": await workflowTraceId(id),
+    });
+  } catch (err) {
+    await endRun(env, id, "error", `workflow start failed: ${String((err as Error)?.message ?? err).slice(0, 400)}`);
+    throw err;
+  }
   return "started";
 }
 
@@ -175,14 +200,11 @@ export async function reconcileProcessing(env: Env): Promise<void> {
   const { results } = await env.DB.prepare("SELECT id FROM videos WHERE status = 'processing'").all<{ id: string }>();
   for (const row of results) {
     try {
-      const { latest } = await probeInstances(env, row.id);
-      if (latest && !FINISHED.has((await latest.status()).status)) continue;
-      const reason = "workflow ended without a final status";
-      // The video update removes the row from the next SELECT, so the run must be closed first.
-      if (latest) await endRun(env, latest.id, "error", reason);
+      // runActive closes the run first, because the video update removes the row from the next SELECT.
+      if (await runActive(env, row.id)) continue;
       // The workflow can write its final status after the SELECT above, so only a row still 'processing' changes.
       await env.DB.prepare("UPDATE videos SET status = 'error', error = ?, updated_at = ? WHERE id = ? AND status = 'processing'")
-        .bind(reason, now(), row.id)
+        .bind(NO_FINAL_STATUS, now(), row.id)
         .run();
     } catch (err) {
       console.error(`reconcile ${row.id} failed`, err);

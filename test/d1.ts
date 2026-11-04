@@ -10,7 +10,7 @@ export function d1(db: Database) {
         bind: (...values: unknown[]) => ((args = values), statement),
         all: async () => ({ results: db.query(sql).all(...(args as never[])) }),
         first: async () => db.query(sql).get(...(args as never[])),
-        run: async () => db.query(sql).run(...(args as never[])),
+        run: async () => ({ meta: { changes: db.query(sql).run(...(args as never[])).changes } }),
       };
       return statement;
     },

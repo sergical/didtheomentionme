@@ -12,6 +12,9 @@ export function resultPath(input: LookupInput, source: string): string {
   return `/?${params}`;
 }
 
+export const explorePath = (source: string, sort: "newest" | "posts" = "newest") =>
+  `/explore?${new URLSearchParams(sort === "posts" ? { source, sort } : { source })}`;
+
 export function shareTitle(name: string, result?: LookupResult): string {
   if (!result) return `Did ${name} mention me?`;
   const matches = result.matches.filter((m) => !result.query || (m.overlap ?? 0) >= 0.75);

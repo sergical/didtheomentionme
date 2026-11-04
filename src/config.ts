@@ -11,6 +11,8 @@ export interface Source {
   avatar: string;
   /** OKLCH hue of the page accent: Theo's pink, Prime's orange. */
   hue: number;
+  /** The creator's own X handle, without the @. */
+  xHandle: string;
   /** One creator can post on several channels. */
   youtubeChannelIds: string[];
   detectors: string[];
@@ -33,6 +35,7 @@ export const SOURCES: Source[] = [
     id: "theo",
     name: "Theo",
     hue: 350,
+    xHandle: "theo",
     avatar: "https://yt3.googleusercontent.com/Y6jut5A-dhWRlv7W81kGxVFPtZGjZN97IhBP75uLnx2AVV7ZEJUUUxBKHlFw9GcwILxkz1E_cLc=s96-c-k-c0x00ffffff-no-rj",
     youtubeChannelIds: ["UCbRP3c757lWg9M-U7TyEkXA"],
     detectors: ["x-post"],
@@ -42,6 +45,7 @@ export const SOURCES: Source[] = [
     id: "prime",
     name: "Prime",
     hue: 55,
+    xHandle: "ThePrimeagen",
     avatar: "https://yt3.googleusercontent.com/Eu_xR4JfLlrruwj1lrmfDiOpe8GARBs8M0hgQ6NsGhQ0qC8S-po9HEHw1W21sPN2BHO6EHXrSwM=s96-c-k-c0x00ffffff-no-rj",
     youtubeChannelIds: ["UCUyeluBRhGPCW4rPe_UvBZQ", "UC8ENHE5xdFSwx71u3fDH5Xw"],
     detectors: ["x-post"],

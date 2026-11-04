@@ -1,27 +1,11 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
 import type { Env } from "../src/env";
+import { d1, migrated } from "./d1";
 
 mock.module("@cloudflare/containers", () => ({ getContainer: () => ({}) }));
 const { lookup } = await import("../src/lookup");
 const { startPending } = await import("../src/videos");
-
-/** The D1 calls the app makes, run on an in-memory SQLite database with the real migrations. */
-function d1(db: Database) {
-  return {
-    prepare(sql: string) {
-      let args: unknown[] = [];
-      const statement = {
-        bind: (...values: unknown[]) => ((args = values), statement),
-        all: async () => ({ results: db.query(sql).all(...(args as never[])) }),
-        first: async () => db.query(sql).get(...(args as never[])),
-        run: async () => db.query(sql).run(...(args as never[])),
-      };
-      return statement;
-    },
-  };
-}
 
 let db: Database;
 let vectorIds: string[] = [];
@@ -57,8 +41,7 @@ function mention(id: number, videoId: string, handle: string, text: string) {
 }
 
 beforeEach(() => {
-  db = new Database(":memory:");
-  for (const file of readdirSync("migrations").sort()) db.exec(readFileSync(`migrations/${file}`, "utf8"));
+  db = migrated();
   vectorIds = [];
   started = [];
 });

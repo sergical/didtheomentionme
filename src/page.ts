@@ -1,20 +1,20 @@
-import { resultPath, shareTitle, SITE_ORIGIN } from "./share";
+import { explorePath, resultPath, shareTitle, SITE_ORIGIN } from "./share";
 import { formatTime } from "./pipeline";
 import type { LookupInput, LookupResult, Match } from "./lookup";
 
 const escapes: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-const esc = (value: string | number | null | undefined) => String(value ?? "").replace(/[&<>"']/g, (c) => escapes[c]);
+export const esc = (value: string | number | null | undefined) => String(value ?? "").replace(/[&<>"']/g, (c) => escapes[c]);
 
-const formatDate = (iso: string | null, withYear = true) =>
+export const formatDate = (iso: string | null, withYear = true) =>
   iso
     ? new Date(iso).toLocaleDateString("en-US", { year: withYear ? "numeric" : undefined, month: "short", day: "numeric", timeZone: "UTC" })
     : "";
 
 const WORDS = /[\p{L}\p{N}]+/gu;
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-const STYLE = `
+export const STYLE = `
 :root {
   color-scheme: dark;
   /* The creator's hue. renderPage sets both on <html>, and the neutrals take a hue near the accent so they agree with it. */
@@ -238,6 +238,16 @@ footer p { margin: 0; max-width: 36rem; }
 }
 `;
 
+export const PICKER_SCRIPT = `const pick = document.querySelector(".pick");
+if (pick) {
+  document.addEventListener("click", (e) => { if (!pick.contains(e.target)) pick.open = false; });
+  pick.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !pick.open) return;
+    pick.open = false;
+    pick.querySelector("summary").focus();
+  });
+}`;
+
 // Only a fine pointer moves focus on tab change: on a phone it would open the keyboard over the page.
 const SCRIPT = `const sharing = document.querySelector(".share");
 if (sharing) {
@@ -273,16 +283,8 @@ addEventListener("pageshow", () => {
   switchingCreator = false;
 });
 addEventListener("pageswap", (e) => { if (!switchingCreator) e.viewTransition?.skipTransition(); });
-const pick = document.querySelector(".pick");
-if (pick) {
-  for (const link of pick.querySelectorAll(".menu a")) link.addEventListener("click", () => { switchingCreator = true; });
-  document.addEventListener("click", (e) => { if (!pick.contains(e.target)) pick.open = false; });
-  pick.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !pick.open) return;
-    pick.open = false;
-    pick.querySelector("summary").focus();
-  });
-}
+for (const link of document.querySelectorAll(".pick .menu a")) link.addEventListener("click", () => { switchingCreator = true; });
+${PICKER_SCRIPT}
 const openTab = (tab) => {
   document.getElementById("by-" + tab).checked = true;
   return document.getElementById(tab);
@@ -292,8 +294,8 @@ if (matchMedia("(pointer: fine)").matches)
     label.addEventListener("click", () => requestAnimationFrame(() => openTab(label.htmlFor.slice(3)).focus({ preventScroll: true })));
 for (const button of document.querySelectorAll("[data-tab]")) button.addEventListener("click", () => openTab(button.dataset.tab).focus());`;
 
-const NEW_TAB = 'target="_blank" rel="noopener noreferrer" aria-describedby="new-tab-hint"';
-const PLAY = `<svg viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0v12l10-6z" fill="currentColor"/></svg>`;
+export const NEW_TAB = 'target="_blank" rel="noopener noreferrer" aria-describedby="new-tab-hint"';
+export const PLAY = `<svg viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0v12l10-6z" fill="currentColor"/></svg>`;
 
 /** A text match with at least this share of the query words is shown as a close match. */
 const CLOSE_MATCH = 0.75;
@@ -320,7 +322,7 @@ export interface PageData {
 
 const tabFor = (input: LookupInput): Tab => (input.q?.trim() ? "text" : input.tweet.trim() && !input.handle.trim() ? "post" : "handle");
 
-const youtube = (videoId: string, seconds: number) =>
+export const youtube = (videoId: string, seconds: number) =>
   `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&amp;t=${Math.floor(seconds)}s`;
 
 /** Wraps the words of `text` that are in `words` with <mark>, escaping everything else. */
@@ -336,7 +338,7 @@ function highlight(text: string, words: Set<string>): string {
   return out + esc(text.slice(last));
 }
 
-function hue(handle: string): number {
+export function hue(handle: string): number {
   let h = 0;
   for (const c of handle.toLowerCase()) h = (h * 31 + c.charCodeAt(0)) % 360;
   return h;
@@ -466,30 +468,34 @@ const CHECK = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3
 const face = ({ id, avatar }: SourceRef) =>
   `<img class="face" src="${esc(avatar)}" alt="" width="96" height="96" referrerpolicy="no-referrer" style="--hue:${hue(id)}">`;
 
-function creatorPicker({ source, sources, input }: PageData): string {
+export function creatorPicker(source: SourceRef, sources: SourceRef[], href: (id: string) => string): string {
   if (sources.length < 2) return esc(source.name);
   const names = sources.map((s) => `<span${s.id === source.id ? "" : ' aria-hidden="true"'}>${esc(s.name)}</span>`);
   const items = sources.map((s) => {
     const { id, name, coverage: c } = s;
     const meta = c.videos ? `${plural(c.videos, "video")} · ${esc(formatDate(c.from, false))} to ${esc(formatDate(c.to, false))}` : "First videos in progress";
     const current = id === source.id;
-    return `<a href="${esc(resultPath(input, id))}"${current ? ' aria-current="page"' : ""}>${face(s)}${esc(name)}<small>${meta}</small>${current ? CHECK : ""}</a>`;
+    return `<a href="${esc(href(id))}"${current ? ' aria-current="page"' : ""}>${face(s)}${esc(name)}<small>${meta}</small>${current ? CHECK : ""}</a>`;
   });
   return `<details class="pick"><summary>${face(source)}<span class="names">${names.join("")}</span>${CHEVRON}</summary>
 <nav class="menu" aria-label="Creators">${items.join("")}</nav></details>`;
 }
 
-export function renderPage(data: PageData): string {
-  const { input } = data;
-  const active = tabFor(input);
-  const name = esc(data.source.name);
-  const title = shareTitle(data.source.name, data.result);
-  const path = resultPath(input, data.source.id);
-  const canonical = SITE_ORIGIN + path;
-  const image = SITE_ORIGIN + "/og.png" + path.slice(1);
-  const description = `Find the exact moments ${data.source.name} showed X posts on screen, with video frames and links to each second.`;
+export interface HeadData {
+  title: string;
+  /** The social preview text. */
+  description: string;
+  /** The search result text. */
+  metaDescription: string;
+  canonical: string;
+  image: string;
+  hue: number;
+  style?: string;
+}
+
+export function documentHead({ title, description, metaDescription, canonical, image, hue, style = "" }: HeadData): string {
   return `<!doctype html>
-<html lang="en" style="--accent-h:${data.source.hue};--tint-h:${data.source.hue - 50}">
+<html lang="en" style="--accent-h:${hue};--tint-h:${hue - 50}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -511,13 +517,26 @@ export function renderPage(data: PageData): string {
 <meta name="twitter:title" content="${esc(title)}">
 <meta name="twitter:description" content="${esc(description)}">
 <meta name="twitter:image" content="${esc(image)}">
-<meta name="description" content="Find out if ${name} showed or read your X post in a video.">
-<style>${STYLE}</style>
+<meta name="description" content="${esc(metaDescription)}">
+<style>${STYLE}${style}</style>
 </head>
+`;
+}
+
+export function renderPage(data: PageData): string {
+  const { input } = data;
+  const active = tabFor(input);
+  const name = esc(data.source.name);
+  const title = shareTitle(data.source.name, data.result);
+  const path = resultPath(input, data.source.id);
+  const canonical = SITE_ORIGIN + path;
+  const image = SITE_ORIGIN + "/og.png" + path.slice(1);
+  const description = `Find the exact moments ${data.source.name} showed X posts on screen, with video frames and links to each second.`;
+  return `${documentHead({ title, description, metaDescription: `Find out if ${data.source.name} showed or read your X post in a video.`, canonical, image, hue: data.source.hue })}
 <body>
 <main${data.result || data.error ? ' class="compact"' : ""}>
-<h1>Did ${creatorPicker(data)} mention <em>me?</em></h1>
-<p class="lede">We scan every video for X posts on screen, then check the transcript to see if they were read aloud.</p>
+<h1>Did ${creatorPicker(data.source, data.sources, (id) => resultPath(input, id))} mention <em>me?</em></h1>
+<p class="lede">We scan every video for X posts on screen, then check the transcript to see if they were read aloud. <a href="${esc(explorePath(data.source.id))}">See everything ${name} showed</a>.</p>
 
 <div class="search">
 <fieldset class="tabs"><legend class="sr-only">Search by</legend>
@@ -559,6 +578,7 @@ ${data.result ? results(data.result).replace('</section>', `</section>${shareCon
 
 <footer>
 <p>An image model looks for X posts in the frames of each video. A second model reads them, and the transcript shows if ${name} read them aloud. Results can miss posts or misread a handle.</p>
+<p><a href="${esc(explorePath(data.source.id))}">Explore every ${name} video we scanned</a>.</p>
 <p>Not affiliated with ${name}.</p>
 </footer>
 </main>

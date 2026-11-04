@@ -131,7 +131,7 @@ export const transcribeSpan = <T extends { transcription_info?: { duration?: num
   );
 
 export type FrameReference = { videoId: string; second: number; size: "f640" | "f1280" };
-const FRAME_ORIGIN = "https://didtheomentionme.s-a62.workers.dev";
+const FRAME_ORIGIN = "https://didtheomention.me";
 
 export function frameAttributes(frame: FrameReference) {
   return {

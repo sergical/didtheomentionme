@@ -5,6 +5,7 @@
   "compatibility_date": "2026-10-15",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  "routes": [{ "pattern": "didtheomention.me", "custom_domain": true }],
   "triggers": { "crons": ["*/10 * * * *"] },
   // After its last sleep, a workflow runs detection in one invocation: about 2 subrequests per video second.
   "limits": { "subrequests": 100000 },

@@ -2,12 +2,12 @@
 
 Find out if a creator showed or read your X post in one of their videos.
 
-Live: https://didtheomentionme.s-a62.workers.dev
+Live: https://didtheomention.me
 
 - **Search** by X handle, post link, or words from the post. The result shows each moment the post was on screen, with
   a frame and a link to that second on YouTube, and the words the creator said if they read it aloud.
 - **Explore** every scanned video, the most shown accounts, and when posts show up in a video:
-  https://didtheomentionme.s-a62.workers.dev/explore
+  https://didtheomention.me/explore
 
 It covers Theo (t3.gg) and ThePrimeagen. It is not affiliated with either of them.
 

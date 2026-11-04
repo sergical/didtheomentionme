@@ -1,6 +1,6 @@
 import type { LookupInput, LookupResult } from "./lookup";
 
-export const SITE_ORIGIN = "https://didtheomentionme.s-a62.workers.dev";
+export const SITE_ORIGIN = "https://didtheomention.me";
 
 export function resultPath(input: LookupInput, source: string): string {
   const params = new URLSearchParams();

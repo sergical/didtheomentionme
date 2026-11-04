@@ -20,7 +20,7 @@ export async function fetchTweet(id: string): Promise<TweetInfo | null> {
   try {
     const res = await fetch(`https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=${syndicationToken(id)}`, {
       // The endpoint answers 400 to a request with no user agent, and Workers sends none.
-      headers: { "user-agent": "didtheomentionme/1.0 (+https://didtheomentionme.s-a62.workers.dev)" },
+      headers: { "user-agent": "didtheomentionme/1.0 (+https://didtheomention.me)" },
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;

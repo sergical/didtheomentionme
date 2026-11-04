@@ -22,8 +22,8 @@ test("all video entry points open a safe new tab with a screen reader hint", () 
 
 test("result metadata and share controls use the same absolute result URL", () => {
   const html = renderPage(data);
-  expect(html).toContain('data-url="https://didtheomentionme.s-a62.workers.dev/?handle=theo&amp;source=prime"');
-  expect(html).toContain('property="og:image" content="https://didtheomentionme.s-a62.workers.dev/og.png?handle=theo&amp;source=prime"');
+  expect(html).toContain('data-url="https://didtheomention.me/?handle=theo&amp;source=prime"');
+  expect(html).toContain('property="og:image" content="https://didtheomention.me/og.png?handle=theo&amp;source=prime"');
   expect(html).toContain('name="twitter:card" content="summary_large_image"');
   expect(html).toContain('Prime showed @theo 2 times.');
   expect(html).toContain('Video &lt;title&gt;');

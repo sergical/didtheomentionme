@@ -21,7 +21,7 @@ import {
   type Word,
 } from "./pipeline";
 import { UPLOAD_HOST } from "./container";
-import { sentryOptions, step as traceStep } from "./telemetry";
+import { phase, sentryOptions, step as traceStep, type PhaseStep } from "./telemetry";
 import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
 
 const DETECT_BATCH = 120;
@@ -127,27 +127,34 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     const mentions: Mention[] = [];
     const timeline = frameTimeline(manifest.frames, manifest.keptSeconds);
 
-    if (!isShort && !manifest.hasCaptions) await this.transcribeAudio(videoId, audioChunkCount(manifest), step);
+    if (!isShort && !manifest.hasCaptions) {
+      await phase("transcribe", step, (step) => this.transcribeAudio(videoId, audioChunkCount(manifest), step));
+    }
     await step.do("keep-transcript", IO_STEP, () => this.keepTranscript(videoId, manifest.hasCaptions ? "captions" : "whisper"));
 
     if (!isShort) {
       for (const detector of detectors) {
-        const probs = await this.detect(videoId, detector, manifest, timeline, step);
-        for (const run of findRuns(probs, detector.frameThreshold)) {
-          const posts = await step.do(`read-${detector.id}-${run.start}`, AI_STEP, () =>
-            this.readRun(videoId, detector, run, timeline),
-          );
-          if (posts.length === 0) continue;
-          const withAloud = await step.do(`read-aloud-${detector.id}-${run.start}`, AI_STEP, () =>
-            this.readAloud(videoId, detector, run, posts),
-          );
-          mentions.push(...withAloud.map((m) => ({ ...m, detector: detector.id })));
-        }
+        const attributes = { "app.detector": detector.id };
+        const probs = await phase("detect", step, (step) => this.detect(videoId, detector, manifest, timeline, step), attributes);
+        await phase("read", step, async (step) => {
+          for (const run of findRuns(probs, detector.frameThreshold)) {
+            const posts = await step.do(`read-${detector.id}-${run.start}`, AI_STEP, () =>
+              this.readRun(videoId, detector, run, timeline),
+            );
+            if (posts.length === 0) continue;
+            const withAloud = await step.do(`read-aloud-${detector.id}-${run.start}`, AI_STEP, () =>
+              this.readAloud(videoId, detector, run, posts),
+            );
+            mentions.push(...withAloud.map((m) => ({ ...m, detector: detector.id })));
+          }
+        }, attributes);
       }
     }
 
-    const stored = await step.do("store-db", IO_STEP, () => this.storeMentions(videoId, mentions));
-    await step.do("store-vectors", IO_STEP, () => this.storeVectors(videoId, stored));
+    await phase("store", step, async (step) => {
+      const stored = await step.do("store-db", IO_STEP, () => this.storeMentions(videoId, mentions));
+      await step.do("store-vectors", IO_STEP, () => this.storeVectors(videoId, stored));
+    });
     await step.do("cleanup", IO_STEP, () => this.cleanup(videoId));
     return isShort ? "skipped" : "done";
   }
@@ -201,7 +208,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     throw new NonRetryableError("extract did not finish within 90 minutes");
   }
 
-  private async transcribeAudio(videoId: string, chunks: number, step: WorkflowStep): Promise<void> {
+  private async transcribeAudio(videoId: string, chunks: number, step: PhaseStep): Promise<void> {
     const env = this.env;
     for (let i = 0; i < chunks; i++) {
       await step.do(`transcribe-${i}`, AI_STEP, async () => {
@@ -223,7 +230,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     });
   }
 
-  private async detect(videoId: string, detector: Detector, manifest: Manifest, timeline: number[], step: WorkflowStep): Promise<number[]> {
+  private async detect(videoId: string, detector: Detector, manifest: Manifest, timeline: number[], step: PhaseStep): Promise<number[]> {
     const env = this.env;
     const probs: number[] = [];
     const kept = frameSeconds(manifest.frames, manifest.keptSeconds);

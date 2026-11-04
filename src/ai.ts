@@ -1,7 +1,7 @@
 import type { Detector, Post } from "./config";
 import type { Env } from "./env";
 import { wordsFromSegments, type Word } from "./pipeline";
-import { transcribeSpan, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
+import { transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
 
 // The AI binding types in workers-types do not list these models.
 type AnyRun = { run(model: string, inputs: unknown): Promise<any> };
@@ -119,7 +119,7 @@ export async function transcribe(env: Env, mp3: ArrayBuffer, offsetSeconds: numb
 }
 
 export async function embed(env: Env, texts: string[]): Promise<number[][]> {
-  const result = await runModel(env, EMBED, { text: texts });
+  const result = await withEstimatedInputTokens(texts, () => runModel(env, EMBED, { text: texts }));
   if (!Array.isArray(result?.data) || result.data.length !== texts.length) {
     throw new Error(`bge-m3 returned ${result?.data?.length} vectors for ${texts.length} texts`);
   }

@@ -16,7 +16,7 @@ const PRICES: Record<string, { input: number; output?: number }> = {
 
 export const WHISPER = "@cf/openai/whisper-large-v3-turbo";
 const WHISPER_USD_PER_MINUTE = 0.0005;
-/** The step that keeps a phase's span id and start. It has no work to show. */
+/** The steps that open and close a phase. They have no work to show. */
 const PHASE_START = /^phase:/;
 
 /** No DSN turns Sentry off. */
@@ -78,10 +78,8 @@ export type PhaseStep = {
 
 /**
  * Groups Workflow steps under one span. Each step stays its own segment, so its name still names the spans in it,
- * and points to the phase as its parent. The Worker can restart inside a phase, for example at a sleep, so the
- * phase's span id and start time come from a step: every restart gets them back, and steps from all restarts
- * point to the same phase. A replay returns finished steps without running them, so the phase is sent only by
- * the run that ends it after one of its steps ran.
+ * and points to the phase as its parent. The Worker can restart inside a phase, for example at a sleep, so a first
+ * step keeps the phase's span id and start time for every restart, and a last step sends the phase span once.
  */
 export async function phase<T>(
   name: string,
@@ -89,31 +87,26 @@ export async function phase<T>(
   fn: (step: PhaseStep) => Promise<T>,
   attributes?: Record<string, string | number | boolean>,
 ): Promise<T> {
-  const key = [name, ...Object.values(attributes ?? {})].join(":");
-  const { spanId, startedAt } = await step.do(`phase:${key}`, {}, async () => ({
+  const start = `phase:${[name, ...Object.values(attributes ?? {})].join(":")}`;
+  const { spanId, startedAt } = await step.do(start, {}, async () => ({
     spanId: crypto.randomUUID().replace(/-/g, "").slice(0, 16),
     startedAt: Date.now(),
   }));
-  let ran = false;
-  const tracked: PhaseStep = {
-    do: (stepName, config, callback) =>
-      step.do(stepName, config, (ctx) => {
-        ran = true;
-        return callback(ctx);
-      }),
-    sleep: (stepName, duration) => step.sleep(stepName, duration),
-  };
   return Sentry.withScope(async (scope) => {
     const context = scope.getPropagationContext();
     scope.setPropagationContext({ ...context, parentSpanId: spanId });
-    const span = () =>
-      new SentrySpan({ traceId: context.traceId, spanId, name, op: "workflow.phase", attributes, startTimestamp: startedAt / 1000, sampled: true });
+    const end = (failed: boolean) =>
+      step.do(`${start}:end`, {}, async () => {
+        const span = new SentrySpan({ traceId: context.traceId, spanId, name, op: "workflow.phase", attributes, startTimestamp: startedAt / 1000, sampled: true });
+        if (failed) span.setStatus({ code: 2, message: "internal_error" });
+        span.end();
+      });
     try {
-      const result = await fn(tracked);
-      if (ran) span().end();
+      const result = await fn(step);
+      await end(false);
       return result;
     } catch (err) {
-      if (ran) span().setStatus({ code: 2, message: "internal_error" }).end();
+      await end(true);
       throw err;
     }
   });

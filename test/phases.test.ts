@@ -36,11 +36,16 @@ function capture() {
   return { sent, options, named, attribute };
 }
 
-/** Runs finished steps from the cache, like the Workflows engine on replay, and suspends at a sleep that has not passed. */
-function engine() {
+/**
+ * Runs finished steps from the cache, like the Workflows engine on replay. It suspends at a sleep that has not
+ * passed, and once before each step in `evictAt`, like a Worker evicted between two steps.
+ */
+function engine(evictAt: string[] = []) {
   const cache = new Map<string, unknown>();
+  const evict = new Set(evictAt);
   return {
     async do(name: string, config: object, callback: (ctx: unknown) => Promise<unknown>) {
+      if (evict.delete(name)) return new Promise(() => {});
       if (!cache.has(name)) cache.set(name, await callback({ attempt: 1, config, step: { name, count: 1 } }));
       return cache.get(name);
     },
@@ -48,7 +53,7 @@ function engine() {
   };
 }
 
-test("workflow steps nest under one phase span each, also across a restart, with no empty phase spans on replay", async () => {
+test("workflow steps nest under one phase span each, sent once, across restarts at a sleep and after a phase's last step", async () => {
   const { sent, options, named, attribute } = capture();
   const config = { retries: { limit: 1, delay: "1 second", backoff: "constant" } } as const;
   class Fixture {
@@ -68,11 +73,13 @@ test("workflow steps nest under one phase span each, also across a restart, with
   const pending: Promise<unknown>[] = [];
   const ctx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException() {} };
   const Workflow = Sentry.instrumentWorkflowWithSentry(() => options, Fixture as never) as unknown as new (...args: unknown[]) => Fixture;
-  const step = engine();
+  const step = engine(["phase:transcribe:end"]);
   const event = { instanceId: "replay-instance", payload: {}, timestamp: new Date() };
 
-  void new Workflow(ctx, {}).run(event, step as never);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (let restart = 0; restart < 2; restart++) {
+    void new Workflow(ctx, {}).run(event, step as never);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   await new Workflow(ctx, {}).run(event, step as never);
   await new Workflow(ctx, {}).run(event, step as never);
   await Promise.all(pending);

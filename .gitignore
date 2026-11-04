@@ -3,3 +3,4 @@ node_modules
 .dev.vars
 experiments/data
 __pycache__
+docs/demo.md

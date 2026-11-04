@@ -3,8 +3,8 @@
 Did a creator (Theo) show or read your X post in a video? A visitor enters an X handle, and optionally a post URL.
 The app answers from an index of the creator's videos from the last 30 days.
 
-Deployed at https://didtheomentionme.s-a62.workers.dev, on the personal Cloudflare account
-`a6221d3398c2e695ab8e1a2f1237bd1b` (SERG.TECH). Run `pnpm exec wrangler whoami` before you deploy.
+Deployed at https://didtheomentionme.s-a62.workers.dev. Run `pnpm exec wrangler whoami` before you deploy, to make
+sure you deploy to the correct Cloudflare account.
 
 The model choices come from experiments recorded in `experiments/` (one 41 min video, hand-labeled):
 

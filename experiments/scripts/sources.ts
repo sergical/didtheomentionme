@@ -3,7 +3,7 @@
 //   bun sources.ts <words.tsv> <out.jsonl>
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 
-const ACCOUNT = "a6221d3398c2e695ab8e1a2f1237bd1b";
+const ACCOUNT = process.env.CF_ACCOUNT_ID ?? "";
 const TOKEN = process.env.CF_TOKEN ?? "";
 const INSTRUCTIONS = "Names or handles of people or accounts whose post, tweet, reply or message the speaker reads, quotes or describes. Exclude the speaker himself.";
 

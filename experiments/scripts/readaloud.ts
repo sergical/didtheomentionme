@@ -3,7 +3,7 @@
 //   bun readaloud.ts <cases.json> <out.jsonl>
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 
-const ACCOUNT = "a6221d3398c2e695ab8e1a2f1237bd1b";
+const ACCOUNT = process.env.CF_ACCOUNT_ID ?? "";
 const TOKEN = process.env.CF_TOKEN ?? "";
 
 // [case id, handle, post text prefix, read aloud?, approx second]

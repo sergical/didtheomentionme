@@ -6,7 +6,7 @@
 import { readdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ACCOUNT = "a6221d3398c2e695ab8e1a2f1237bd1b";
+const ACCOUNT = process.env.CF_ACCOUNT_ID ?? "";
 const TOKEN = process.env.CF_TOKEN ?? "";
 const STATE = "A frame from a YouTube video by a tech streamer: a screen recording of a web browser with a facecam overlay.";
 const TWEET_QUESTION =

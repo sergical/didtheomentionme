@@ -11,7 +11,7 @@ for (let i = 0; i < seconds.length; i += 12) await Promise.all(
   seconds.slice(i, i + 12).map(async (s) => {
     const image = readFileSync(`${dir}/${String(Number(s) + 1).padStart(5, "0")}.jpg`).toString("base64");
     const started = Date.now();
-    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/a6221d3398c2e695ab8e1a2f1237bd1b/ai/run/${model}`, {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/ai/run/${model}`, {
       method: "POST",
       headers: { authorization: `Bearer ${process.env.CF_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify({

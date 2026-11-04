@@ -363,7 +363,7 @@ function verdict(result: LookupResult, close: Match[], loose: Match[]): string {
   const shown = result.query
     ? `${esc(name)} showed ${plural(close.length, "post")} with that text`
     : `${esc(name)} showed your posts ${plural(close.reduce((sum, m) => sum + m.times.length, 0), "time")}`;
-  const read = aloud === 0 ? ", but did not read them aloud." : aloud === close.length && aloud > 1 ? " and read every one aloud." : ` and read ${aloud} aloud.`;
+  const read = aloud === 0 ? `, but did not read ${result.query && close.length === 1 ? "it" : "them"} aloud.` : aloud === close.length && aloud > 1 ? " and read every one aloud." : ` and read ${aloud} aloud.`;
   return section("yes", "Yes.", shown + read);
 }
 

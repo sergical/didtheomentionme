@@ -1,0 +1,20 @@
+{
+  "name": "didtheomentionme",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.3.0",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "@sentry/cloudflare": "^11.10.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261001.0",
+    "typescript": "^7.0.0",
+    "wrangler": "^4.140.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "didtheomentionme",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/10 * * * *"] },
+  // After its last sleep, a workflow runs detection in one invocation: about 2 subrequests per video second.
+  "limits": { "subrequests": 100000 },
+  "ai": { "binding": "AI" },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "didtheomentionme-media" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "didtheomentionme",
+      "database_id": "0f50ad26-6cf1-46eb-977f-c87011629243",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vectorize": [{ "binding": "POSTS", "index_name": "didtheomentionme-posts" }],
+  "workflows": [{ "name": "video-workflow", "binding": "VIDEO_WORKFLOW", "class_name": "VideoWorkflow" }],
+  "containers": [
+    {
+      "class_name": "MediaContainer",
+      "image": "./container/Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 4
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "MEDIA", "class_name": "MediaContainer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MediaContainer"] }]
+}

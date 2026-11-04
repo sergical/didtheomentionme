@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/cloudflare";
+import type { WorkflowStepConfig, WorkflowStepContext } from "cloudflare:workers";
 import type { Env } from "./env";
 
 const KB = (base64Length: number) => Math.round((base64Length * 3) / 4 / 1024);
@@ -9,6 +10,7 @@ const PRICES: Record<string, { input: number; output?: number }> = {
   "@cf/cloudflare/clef": { input: 0.24 },
   "@cf/cloudflare/clairic": { input: 0.1 },
   "@cf/google/gemma-4-26b-a4b-it": { input: 0.1, output: 0.3 },
+  "@cf/baai/bge-m3": { input: 0.012 },
 };
 
 export const WHISPER = "@cf/openai/whisper-large-v3-turbo";
@@ -22,14 +24,14 @@ export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
   // The SDK records no audio length for whisper, so `transcribeSpan` makes the whisper span.
   ignoreSpans: [{ name: `chat ${WHISPER}` }],
   integrations: [{
-    name: "FrameReference",
+    name: "ScopeAttributes",
     setup(client) {
       client.on("spanStart", (span) => {
         const data = Sentry.spanToJSON(span);
         if (!String(data.attributes["sentry.op"]).startsWith("gen_ai")) return;
-        const frame = Sentry.getCurrentScope().getScopeData().contexts.frame;
-        if (frame) {
-          for (const [key, value] of Object.entries(frame)) {
+        const { frame, usage } = Sentry.getCurrentScope().getScopeData().contexts;
+        for (const context of [frame, usage]) {
+          for (const [key, value] of Object.entries(context ?? {})) {
             if (typeof value === "string" || typeof value === "number") span.setAttribute(key, value);
           }
         }
@@ -37,6 +39,12 @@ export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
     },
   }],
   beforeSendSpan(span) {
+    const estimate = span.attributes["app.estimated_input_tokens"];
+    if (span.attributes["gen_ai.usage.input_tokens"] == null && typeof estimate === "number") {
+      span.attributes["gen_ai.usage.input_tokens"] = estimate;
+      span.attributes["gen_ai.usage.total_tokens"] = estimate;
+      span.attributes["app.tokens_estimated"] = true;
+    }
     const price = PRICES[String(span.attributes["gen_ai.request.model"])];
     if (price) {
       const tokens = (key: string) => Number(span.attributes[key]) || 0;
@@ -58,6 +66,51 @@ export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
 /** A named span, so a lookup or cron trace reads like the code runs. */
 export const step = <T>(name: string, fn: () => Promise<T>, attributes?: Record<string, string | number | boolean>) =>
   Sentry.startSpan({ name, op: "function", attributes }, fn);
+
+/** The steps inside a phase. Each one passes a config, so `do` needs only that overload. */
+export type PhaseStep = {
+  do<T extends Rpc.Serializable<T>>(name: string, config: WorkflowStepConfig, callback: (ctx: WorkflowStepContext) => Promise<T>): Promise<T>;
+};
+
+/**
+ * Groups Workflow steps under one span. Each step stays its own segment, so its name still names the spans in it,
+ * and points to the phase as its parent. A replay returns finished steps without running them, so the phase is
+ * sent only when one of its steps ran.
+ */
+export function phase<T>(
+  name: string,
+  step: PhaseStep,
+  fn: (step: PhaseStep) => Promise<T>,
+  attributes?: Record<string, string | number | boolean>,
+): Promise<T> {
+  const span = Sentry.startInactiveSpan({ name, op: "workflow.phase", attributes, parentSpan: null });
+  let ran = false;
+  const tracked: PhaseStep = {
+    do: (stepName, config, callback) =>
+      step.do(stepName, config, (ctx) => {
+        ran = true;
+        return callback(ctx);
+      }),
+  };
+  return Sentry.withScope(async (scope) => {
+    scope.setPropagationContext({ ...scope.getPropagationContext(), parentSpanId: span.spanContext().spanId });
+    try {
+      return await fn(tracked);
+    } catch (err) {
+      span.setStatus({ code: 2, message: "internal_error" });
+      throw err;
+    } finally {
+      if (ran) span.end();
+    }
+  });
+}
+
+/** bge-m3 returns no token usage, so its embeddings span gets an estimate of 4 characters per token. */
+export const withEstimatedInputTokens = <T>(texts: string[], fn: () => Promise<T>) =>
+  Sentry.withScope((scope) => {
+    scope.setContext("usage", { "app.estimated_input_tokens": texts.reduce((sum, text) => sum + Math.ceil(text.length / 4), 0) });
+    return fn();
+  });
 
 /** The trace id Sentry gives a Workflow instance, so a cron or admin span can point to the video's trace. */
 export async function workflowTraceId(instanceId: string): Promise<string> {

@@ -37,10 +37,10 @@ export const UNKNOWN_HANDLE = "@unknown";
 const PLACEHOLDER_HANDLES = new Set(["@handle", "@unknown", "@username", "@user"]);
 const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown"]);
 
-/** Parses the reader model output, one `@handle | display name | text` per line. Drops malformed lines. */
 /** 11 of 12 sampled frames with 8 or more lines were stream chat, which the reader lists despite its prompt. */
 const MAX_POSTS_IN_FRAME = 7;
 
+/** Parses the reader model output, one `@handle | display name | text` per line. Drops malformed lines. */
 export function parseReaderLines(output: string): ReaderLine[] {
   const lines: ReaderLine[] = [];
   for (const raw of output.split("\n")) {

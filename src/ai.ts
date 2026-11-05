@@ -12,7 +12,7 @@ const CLEF = "@cf/cloudflare/clef";
 const CLAIRIC = "@cf/cloudflare/clairic";
 const GEMMA = "@cf/google/gemma-4-26b-a4b-it";
 const EMBED = "@cf/baai/bge-m3";
-/** A feed frame with many posts takes gemma up to 10 s, so a call still running at 15 s is stuck. */
+/** Most frames answer in under 10 s and a stuck call takes over a minute. A slow frame can reach 17 s, which costs one extra call. */
 const READ_HEDGE_MS = 15_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

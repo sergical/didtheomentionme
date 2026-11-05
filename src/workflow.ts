@@ -28,7 +28,7 @@ const DETECT_BATCH = 120;
 const DETECT_CONCURRENCY = 10;
 /**
  * Workers AI returned error 3021 for clef-flash with 3 steps of 12 calls and with 2 steps of 12.
- * 2 steps of 10 calls ran for 93 s with no 3021, at about 1,600 calls a minute.
+ * 2 steps of 10 calls run about 1,400 calls a minute, which is at the limit: one 2,462-frame video had 3021 only in its last 15 s.
  */
 const DETECT_STEPS = 2;
 const READ_CONCURRENCY = 6;

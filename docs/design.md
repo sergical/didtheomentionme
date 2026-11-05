@@ -48,7 +48,7 @@ interface Detector {
   label: string;                 // "X post"
   frameState: string;            // clef-flash `state`
   frameQuestion: string;         // clef-flash noul question
-  frameThreshold: number;        // 0.5
+  frameThreshold: number;        // 0.75
   readerPrompt: string;          // gemma-4 prompt, one line per item: "@handle | display name | text"
   readAloudQuestion(post: Post): string;   // clef noul question
   readAloudThreshold: number;    // 0.3

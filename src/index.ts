@@ -1,4 +1,4 @@
-import { withSentry } from "@sentry/cloudflare";
+import { logger, withSentry } from "@sentry/cloudflare";
 import { DEFAULT_SOURCE, SOURCES, getSource } from "./config";
 import { authorized } from "./auth";
 import type { Env } from "./env";
@@ -126,7 +126,9 @@ export default withSentry(sentryOptions, {
           await step("expire debug frames", () => expireFrames(env.BUCKET, env.DB, controller.scheduledTime));
         }
         const discovered = await Promise.allSettled(SOURCES.map((s) => step(`discover ${s.id}`, () => discoverRss(env, s))));
-        for (const r of discovered) if (r.status === "rejected") console.error("discovery failed", r.reason);
+        discovered.forEach((r, i) => {
+          if (r.status === "rejected") logger.error(logger.fmt`Discovery of ${SOURCES[i].id} failed`, { "video.source": SOURCES[i].id, error: String(r.reason?.message ?? r.reason) });
+        });
         await step("start pending videos", () => startPending(env));
       })(),
     );

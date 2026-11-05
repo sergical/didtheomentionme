@@ -1,7 +1,8 @@
+import { logger, metrics } from "@sentry/cloudflare";
 import type { Detector, Post } from "./config";
 import type { Env } from "./env";
 import { wordsFromSegments, type Word } from "./pipeline";
-import { transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
+import { chatSpan, transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
 
 // The AI binding types in workers-types do not list these models.
 type AnyRun = { run(model: string, inputs: unknown): Promise<any> };
@@ -27,6 +28,9 @@ export async function runModel(env: Env, model: string, inputs: unknown, attempt
       return await (env.AI as unknown as AnyRun).run(model, inputs);
     } catch (err) {
       if (attempt >= attempts - 1 || !isRetryable(err)) throw err;
+      const error = String((err as Error)?.message ?? err).slice(0, 300);
+      logger.warn(logger.fmt`${model} failed, retry ${attempt + 1} of ${attempts - 1}`, { "gen_ai.request.model": model, error });
+      metrics.count("ai.retry", 1, { attributes: { "gen_ai.request.model": model } });
       await sleep(1000 * 2 ** attempt + Math.random() * 500);
     }
   }
@@ -66,7 +70,7 @@ export async function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffe
 
 /** Raw reader output: one `@handle | display name | text` line per post. */
 export async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
-  const result = await withFrameReference(frame, () => runModel(env, GEMMA, {
+  const inputs = {
     max_tokens: 1500,
     chat_template_kwargs: { enable_thinking: false },
     messages: [
@@ -78,7 +82,8 @@ export async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer,
         ],
       },
     ],
-  }));
+  };
+  const result = await withFrameReference(frame, () => chatSpan(GEMMA, inputs, () => runModel(env, GEMMA, inputs)));
   const text = result?.choices?.[0]?.message?.content ?? result?.response;
   if (typeof text !== "string") throw new Error(`gemma-4 returned no text: ${JSON.stringify(result).slice(0, 200)}`);
   return text;

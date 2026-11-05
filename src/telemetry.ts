@@ -125,6 +125,40 @@ export async function workflowTraceId(instanceId: string): Promise<string> {
   return Array.from(hash.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+type ChatResult = { choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+
+/**
+ * A gen_ai span for one chat call. gemma-4 answers in the OpenAI `choices` shape, but the SDK reads chat output only
+ * from `response`, so this span records the answer and the SDK's own span is suppressed.
+ */
+export const chatSpan = <T extends ChatResult>(model: string, inputs: { max_tokens?: number; messages: unknown[] }, fn: () => Promise<T>) =>
+  Sentry.startSpan(
+    {
+      name: `chat ${model}`,
+      op: "gen_ai.chat",
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "cloudflare.workers_ai",
+        "gen_ai.request.model": model,
+        "gen_ai.request.max_tokens": inputs.max_tokens,
+        "gen_ai.input.messages": JSON.stringify(inputs.messages),
+      },
+    },
+    async (span) => {
+      const result = await Sentry.suppressTracing(fn);
+      const input = result?.usage?.prompt_tokens ?? 0;
+      const output = result?.usage?.completion_tokens ?? 0;
+      span.setAttributes({ "gen_ai.usage.input_tokens": input, "gen_ai.usage.output_tokens": output, "gen_ai.usage.total_tokens": input + output });
+      const choice = result?.choices?.[0];
+      if (typeof choice?.message?.content === "string") {
+        span.setAttribute("gen_ai.output.messages", JSON.stringify([
+          { role: "assistant", parts: [{ type: "text", content: choice.message.content }], finish_reason: choice.finish_reason },
+        ]));
+      }
+      return result;
+    },
+  );
+
 /** A gen_ai span for one whisper call, priced by audio minute. */
 export const transcribeSpan = <T extends { transcription_info?: { duration?: number } }>(fn: () => Promise<T>) =>
   Sentry.startSpan(

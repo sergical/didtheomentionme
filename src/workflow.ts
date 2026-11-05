@@ -1,4 +1,4 @@
-import { captureException, captureMessage, getActiveSpan, instrumentWorkflowWithSentry } from "@sentry/cloudflare";
+import { captureException, captureMessage, getActiveSpan, instrumentWorkflowWithSentry, logger, metrics } from "@sentry/cloudflare";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { detectFrame, embed, findQuoteSpan, pool, readAloudProbability, readFrame, transcribe } from "./ai";
@@ -92,6 +92,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         await setStatus(env, videoId, pending ? "pending" : outcome, pending ? "not ready yet, will retry" : null);
         await endRun(env, instanceId, outcome);
         if (pending) captureMessage(`${videoId} not ready: ${outcome}`, { level: "warning", tags: { "video.id": videoId, "video.not_ready": outcome } });
+        logger.info(logger.fmt`Video ${videoId} finished: ${outcome}`, { "video.id": videoId, "video.source": source });
+        metrics.count("video.processed", 1, { attributes: { "video.outcome": outcome, "video.source": source } });
       });
     } catch (err) {
       const message = String((err as Error)?.message ?? err).slice(0, 500);
@@ -100,6 +102,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         await setStatus(env, videoId, "error", message);
         // The Sentry step wrapper reports an error only after the step's last retry, so it never sees these.
         if (err instanceof NonRetryableError) captureException(err, { tags: { "video.id": videoId } });
+        logger.error(logger.fmt`Video ${videoId} failed: ${message}`, { "video.id": videoId, "video.source": source });
+        metrics.count("video.processed", 1, { attributes: { "video.outcome": "error", "video.source": source } });
       });
       throw err;
     }
@@ -203,6 +207,12 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         )
           .bind(manifest.title, manifest.duration, isoOrNull(manifest.publishedAt), videoId)
           .run();
+        logger.info(logger.fmt`Extracted ${manifest.frames} frames from ${manifest.duration ?? "?"} s of video, captions: ${manifest.hasCaptions}`, {
+          "video.id": videoId,
+          "extract.polls": i + 1,
+        });
+        metrics.distribution("extract.polls", i + 1);
+        if (manifest.duration != null) metrics.distribution("video.duration", manifest.duration, { unit: "second" });
       });
       return manifest;
     }
@@ -276,6 +286,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         httpMetadata: { contentType: "application/json" },
       });
     }
+    logger.info(logger.fmt`Kept ${words.length} transcript words from ${origin}`, { "video.id": videoId });
+    metrics.distribution("transcript.words", words.length, { attributes: { "app.transcript_origin": origin } });
     return words.length;
   }
 
@@ -287,8 +299,12 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       run.end + WINDOW_PADDING_SECONDS,
     );
     const mentions: Mention[] = posts.map((p) => ({ ...p, detector: detector.id, readAloudP: null, readAloudAt: null, quote: null }));
-    if (!window.text) return mentions;
+    if (!window.text) {
+      metrics.count("read_aloud.checks", mentions.length, { attributes: { "app.detector": detector.id, "read_aloud.result": "no_transcript" } });
+      return mentions;
+    }
 
+    const results = new Map<Mention, "read" | "not_read" | "no_quote">();
     await pool(mentions, READ_ALOUD_CONCURRENCY, async (mention) => {
       let post = { handle: mention.handle, displayName: mention.displayName, text: mention.slices[0] };
       let p = 0;
@@ -298,12 +314,25 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         if (q > p) [p, post] = [q, candidate];
       }
       mention.readAloudP = Math.round(p * 1000) / 1000;
+      results.set(mention, "not_read");
       if (p < detector.readAloudThreshold) return;
       const span = await findQuoteSpan(env, detector, post, window.text);
+      results.set(mention, span ? "read" : "no_quote");
       if (!span) return;
       mention.readAloudAt = Math.floor(timeAtOffset(window.offsets, span[0]) ?? run.start);
       mention.quote = expandSentence(window.text, span[0], span[1]);
     });
+    // After the pool, so a failed check that retries the step cannot count the others twice.
+    for (const [mention, result] of results) {
+      metrics.count("read_aloud.checks", 1, { attributes: { "app.detector": detector.id, "read_aloud.result": result } });
+      if (result === "read") {
+        logger.info(logger.fmt`${mention.handle} was read aloud at ${mention.readAloudAt} s`, {
+          "video.id": videoId,
+          "read_aloud.p": mention.readAloudP!,
+          "read_aloud.quote": mention.quote!,
+        });
+      }
+    }
     return mentions;
   }
 
@@ -336,6 +365,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       .prepare("SELECT id, handle, text FROM mentions WHERE video_id = ? ORDER BY id")
       .bind(videoId)
       .all<{ id: number; handle: string; text: string }>();
+    logger.info(logger.fmt`Stored ${stored.length} mentions`, { "video.id": videoId });
+    metrics.distribution("video.mentions", stored.length);
     return stored;
   }
 

@@ -1,3 +1,4 @@
+import { logger, metrics } from "@sentry/cloudflare";
 import { embed } from "./ai";
 import { getSource } from "./config";
 import type { Env } from "./env";
@@ -112,7 +113,10 @@ async function ftsMatches(env: Env, sourceId: string, text: string): Promise<num
 /** Mention ids whose text is like `text`, by meaning (Vectorize) or by shared words (FTS). */
 async function textMatches(env: Env, sourceId: string, text: string, embedText: string): Promise<Set<number>> {
   const found = await Promise.all([
-    step("search by meaning", () => vectorMatches(env, sourceId, embedText)).catch((err) => (console.error("vector lookup failed", err), [])),
+    step("search by meaning", () => vectorMatches(env, sourceId, embedText)).catch((err) => {
+      logger.error("Vector search failed, so the lookup uses word search only", { error: String(err?.message ?? err) });
+      return [];
+    }),
     step("search by words", () => ftsMatches(env, sourceId, text)),
   ]);
   return new Set(found.flat());
@@ -153,9 +157,13 @@ function samePost(a: string, b: string): boolean {
 const newestFirst = (a: Match, b: Match) =>
   (b.publishedAt ?? "").localeCompare(a.publishedAt ?? "") || a.firstSeen - b.firstSeen;
 
-export function lookup(env: Env, input: LookupInput): Promise<LookupResult> {
+export async function lookup(env: Env, input: LookupInput): Promise<LookupResult> {
   const kind = input.q?.trim() ? "text" : input.tweet.trim() ? "post" : "handle";
-  return step("lookup", () => search(env, input), { "lookup.kind": kind, "lookup.source": input.source ?? "" });
+  const result = await step("lookup", () => search(env, input), { "lookup.kind": kind, "lookup.source": input.source ?? "" });
+  metrics.count("lookup", 1, {
+    attributes: { "lookup.kind": kind, "lookup.source": result.source.id, "lookup.result": result.matches.length ? "found" : "none" },
+  });
+  return result;
 }
 
 async function search(env: Env, input: LookupInput): Promise<LookupResult> {

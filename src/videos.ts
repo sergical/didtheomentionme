@@ -1,4 +1,5 @@
 import { getContainer } from "@cloudflare/containers";
+import { logger, metrics } from "@sentry/cloudflare";
 import { MAX_IN_FLIGHT, MAX_RETRIES, MIN_DURATION_SECONDS, RETRY_BASE_MINUTES, type Source } from "./config";
 import type { Env } from "./env";
 import { step, workflowTraceId } from "./telemetry";
@@ -88,10 +89,11 @@ export async function discoverRss(env: Env, source: Source): Promise<number> {
     } catch (err) {
       failures++;
       lastError = err;
-      console.error(`RSS ${source.id} ${channelId} failed`, err);
+      logger.error(logger.fmt`RSS feed of channel ${channelId} failed`, { "video.source": source.id, error: String((err as Error)?.message ?? err) });
     }
   }
   if (failures > 0 && failures === source.youtubeChannelIds.length) throw lastError;
+  metrics.count("videos.discovered", inserted, { attributes: { "video.source": source.id } });
   return inserted;
 }
 
@@ -207,7 +209,7 @@ export async function reconcileProcessing(env: Env): Promise<void> {
         .bind(NO_FINAL_STATUS, now(), row.id)
         .run();
     } catch (err) {
-      console.error(`reconcile ${row.id} failed`, err);
+      logger.error(logger.fmt`Could not free the slot of video ${row.id}`, { "video.id": row.id, error: String((err as Error)?.message ?? err) });
     }
   }
 }

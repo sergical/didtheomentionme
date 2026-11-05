@@ -60,10 +60,10 @@ export const DETECTORS: Detector[] = [
     label: "X post",
     frameState: "A frame from a YouTube video by a tech streamer: a screen recording of a web browser with a facecam overlay.",
     frameQuestion:
-      "Is a post from X (Twitter) clearly visible and readable as main content of the screen (a post page, timeline, search results, embed or screenshot)? Small sidebar items and avatars do not count.",
+      "Is a post from X (Twitter) clearly visible and readable as main content of the screen (a post page, timeline, search results, embed or screenshot)? An X post shows an avatar, a display name, an @handle and the post text. Small sidebar items and avatars do not count. A live chat, a stream dashboard, an activity feed, or a YouTube page with no X post in its video does not count.",
     frameThreshold: 0.5,
     readerPrompt:
-      "This is a frame from a screen recording. Transcribe every X (Twitter) post visible on screen, including replies and quoted posts. " +
+      "This is a frame from a screen recording. Transcribe every X (Twitter) post visible on screen, including replies and quoted posts. Live stream chat is not X. " +
       "Output one line per post: @handle | display name | post text. Copy characters exactly; write ? for anything unreadable. Output nothing else.",
     readAloudQuestion: (post) =>
       `This is a transcript of a tech streamer while ${postRef(post)} is on screen. Does the speaker read aloud, quote or paraphrase that post's content?`,

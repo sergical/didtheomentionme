@@ -172,7 +172,8 @@ button .spinner { position: absolute; inset: 0; margin: auto; width: 1em; height
 .frame { position: relative; aspect-ratio: 16 / 9; background: var(--surface-2); }
 .frame .cover, .frame img { display: block; width: 100%; height: 100%; }
 .frame img { object-fit: cover; }
-.frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to top, oklch(0 0 0 / 0.55), transparent 45%); }
+a.frame { display: block; }
+.frame:has(.chips)::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to top, oklch(0 0 0 / 0.55), transparent 45%); }
 .chips { position: absolute; z-index: 1; left: .75rem; bottom: .75rem; right: .75rem; display: flex; flex-wrap: wrap; gap: .375rem; }
 .chip { display: inline-flex; align-items: center; gap: .375rem; padding: .25rem .625rem; border-radius: 99px; font-size: .8125rem; font-weight: 600;
   font-variant-numeric: tabular-nums; color: white; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
@@ -202,6 +203,17 @@ mark { background: var(--accent-soft); color: inherit; border-radius: 3px; box-s
 .aloud blockquote::before { content: "\\201C"; }
 .aloud blockquote::after { content: "\\201D"; }
 .quiet { margin: 0; font-size: .875rem; color: var(--muted); }
+.excerpt { margin: 0; font-size: .9375rem; color: var(--muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.said blockquote { margin: 0; font-size: 1.1875rem; line-height: 1.45; letter-spacing: -0.01em; }
+.said figcaption { margin-top: .375rem; font-size: .875rem; }
+.said figcaption::before { content: "\\2014\\00A0"; }
+.said a, .quiet a { color: inherit; font-variant-numeric: tabular-nums; text-underline-offset: 3px; }
+.times { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: .375rem; font-size: .8125rem; color: var(--muted); }
+.times > span:first-child { margin-right: .125rem; }
+.times .chip { min-height: 1.75rem; color: var(--fg); background: var(--surface-2); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.times .badge { margin-left: auto; }
+.times a.chip:focus-visible { outline-color: var(--fg); }
+@media (hover: hover) and (pointer: fine) { .times a.chip { transition-property: transform, background-color; } .times a.chip:hover { background: var(--line); } }
 
 .more { margin-top: 1rem; }
 .more > summary { display: flex; align-items: center; justify-content: center; gap: .5rem; min-height: 44px; padding: .5rem 1rem;
@@ -338,6 +350,14 @@ function highlight(text: string, words: Set<string>): string {
   return out + esc(text.slice(last));
 }
 
+/** Starts long text a few words before the first word in `words`, so the clamped excerpt shows the match. */
+function fromFirstHit(text: string, words: Set<string>): string {
+  const hit = [...text.matchAll(WORDS)].find((m) => words.has(m[0].toLowerCase()));
+  if (!hit || hit.index < 60) return text;
+  const space = text.indexOf(" ", hit.index - 40);
+  return `…${text.slice(space === -1 || space >= hit.index ? hit.index : space + 1)}`;
+}
+
 export function hue(handle: string): number {
   let h = 0;
   for (const c of handle.toLowerCase()) h = (h * 31 + c.charCodeAt(0)) % 360;
@@ -362,41 +382,32 @@ function verdict(result: LookupResult, close: Match[], loose: Match[]): string {
     return section("no", "Not yet.", `Nothing in the ${plural(videos, "video")} from ${esc(formatDate(from, false))} to ${esc(formatDate(to))}. ${next}`);
   }
   const aloud = close.filter((m) => m.readAloud).length;
+  const one = close.length === 1;
   const shown = result.query
     ? `${esc(name)} showed ${plural(close.length, "post")} with that text`
-    : `${esc(name)} showed your posts ${plural(close.reduce((sum, m) => sum + m.times.length, 0), "time")}`;
-  const read = aloud === 0 ? `, but did not read ${result.query && close.length === 1 ? "it" : "them"} aloud.` : aloud === close.length && aloud > 1 ? " and read every one aloud." : ` and read ${aloud} aloud.`;
+    : `${esc(name)} showed ${one ? "your post" : `${close.length} of your posts`}`;
+  const all = one ? "it" : close.length === 2 ? "both" : "every one";
+  const read = aloud === 0 ? `, but did not read ${one ? "it" : "them"} aloud.` : aloud === close.length ? ` and read ${all} aloud.` : ` and read ${aloud} aloud.`;
   return section("yes", "Yes.", shown + read);
 }
 
-function card(m: Match, i: number, words: Set<string>, sourceName: string, eager: boolean): string {
-  const name = m.displayName || m.handle.replace(/^@/, "");
-  const chips = [
-    ...m.times.map(
-      (t, n) =>
-        `<a class="chip" ${NEW_TAB} href="${youtube(m.videoId, t)}">${n === 0 ? `${PLAY} On screen ` : `<span class="sr-only">Also on screen at </span>`}${formatTime(t)}</a>`,
-    ),
-    m.readAloud ? `<a class="chip hot" ${NEW_TAB} href="${youtube(m.videoId, m.readAloud.at)}">Read aloud ${formatTime(m.readAloud.at)}</a>` : "",
-  ].join("");
-  const aloud = m.readAloud
-    ? `<figure class="aloud">
-<figcaption>${esc(sourceName)} read it aloud at <a ${NEW_TAB} href="${youtube(m.videoId, m.readAloud.at)}">${formatTime(m.readAloud.at)}</a></figcaption>
-${m.readAloud.quote ? `<blockquote>${esc(m.readAloud.quote)}</blockquote>` : ""}
-</figure>`
-    : `<p class="quiet">${m.times.length > 1 ? `Shown on screen ${m.times.length} times` : `Shown on screen for about ${Math.max(5, Math.round(m.lastSeen - m.firstSeen))} seconds`}. Not read aloud.</p>`;
+function card(m: Match, i: number, words: Set<string>, sourceName: string, showText: boolean, eager: boolean): string {
+  const seen = m.times
+    .map((t, n) => `<a class="chip" ${NEW_TAB} href="${youtube(m.videoId, t)}">${n === 0 ? PLAY : ""}<span class="sr-only">On screen at </span>${formatTime(t)}</a>`)
+    .join("");
+  const said = m.readAloud?.quote
+    ? `<figure class="aloud said"><blockquote>${esc(m.readAloud.quote)}</blockquote>
+<figcaption>${esc(sourceName)} at <a ${NEW_TAB} href="${youtube(m.videoId, m.readAloud.at)}">${formatTime(m.readAloud.at)}</a></figcaption></figure>`
+    : m.readAloud
+      ? `<p class="quiet">${esc(sourceName)} read it aloud at <a ${NEW_TAB} href="${youtube(m.videoId, m.readAloud.at)}">${formatTime(m.readAloud.at)}</a>.</p>`
+      : `<p class="quiet">Not read aloud.</p>`;
   return `<li class="match" id="mention-${esc(m.videoId)}-${m.firstSeen}" style="--i:${i}">
-<div class="frame">
-<a class="cover" ${NEW_TAB} href="${youtube(m.videoId, m.firstSeen)}" tabindex="-1" aria-hidden="true"><img src="${esc(m.frameUrl)}" alt="" loading="${eager && i < 2 ? "eager" : "lazy"}" decoding="async"></a>
-<span class="chips">${chips}</span>
-</div>
+<a class="frame" ${NEW_TAB} href="${youtube(m.videoId, m.firstSeen)}" tabindex="-1" aria-hidden="true"><img src="${esc(m.frameUrl)}" alt="" loading="${eager && i < 2 ? "eager" : "lazy"}" decoding="async"></a>
 <div class="body">
 <div class="video"><a ${NEW_TAB} href="${youtube(m.videoId, m.firstSeen)}">${esc(m.title ?? m.videoId)}</a><time datetime="${esc(m.publishedAt)}">${esc(formatDate(m.publishedAt))}</time></div>
-<div class="post">
-<div class="avatar" style="--hue:${hue(m.handle)}" aria-hidden="true">${esc(name.charAt(0).toUpperCase())}</div>
-<div><div class="who"><b>${esc(name)}</b><span>${esc(m.handle)}</span>${m.exact ? '<span class="badge">Your post</span>' : ""}</div>
-<p>${highlight(m.text, words)}</p></div>
-</div>
-${aloud}
+<p class="excerpt${showText ? "" : " sr-only"}">${showText ? "" : `Post by ${esc(m.handle)}: `}${highlight(fromFirstHit(m.text, words), words)}</p>
+${said}
+<p class="times"><span>On screen</span>${seen}${m.exact ? '<span class="badge">Your post</span>' : ""}</p>
 </div>
 </li>`;
 }
@@ -410,7 +421,7 @@ function results(result: LookupResult): string {
   const close = result.matches.filter(isClose);
   const loose = result.matches.filter((m) => !isClose(m));
   const cards = (list: Match[], eager = false) =>
-    `<ol class="matches">${list.map((m, i) => card(m, i, words, result.source.name, eager)).join("\n")}</ol>`;
+    `<ol class="matches">${list.map((m, i) => card(m, i, words, result.source.name, Boolean(result.query || result.tweet), eager)).join("\n")}</ol>`;
   const notices = [
     result.tweet ? `<p class="notice">Searched for the post by @${esc(result.tweet.handle)}: “${esc(result.tweet.text)}”</p>` : "",
     result.tweetError ? `<p class="notice">${esc(result.tweetError)}</p>` : "",

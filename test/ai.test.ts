@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { embedRequests, hedge } from "../src/ai";
+import { embedRequests, hedge, retryDelayMs } from "../src/ai";
 
 test("a long post that would pad a request past the limit starts a new one", () => {
   const short = "theo: short post";
@@ -49,4 +49,15 @@ test("two stuck calls fail at 4 times the hedge delay", async () => {
   const startedAt = Date.now();
   await expect(hedge("model", 10, () => after(500, "stuck"))).rejects.toThrow("no answer in 40 ms");
   expect(Date.now() - startedAt).toBeLessThan(200);
+});
+
+test("the per-minute rate limit waits longer than a server error", () => {
+  const rateLimit = new Error("AiError: 3021: rate limiting: inference request per min rate reached");
+  expect(retryDelayMs(rateLimit, 0)).toBeGreaterThanOrEqual(10_000);
+  expect(retryDelayMs(Object.assign(new Error("x"), { status: 503 }), 0)).toBeLessThan(2000);
+});
+
+test("a bad request is not retried", () => {
+  expect(retryDelayMs(new Error("AiError: 5006: invalid input"), 0)).toBeNull();
+  expect(retryDelayMs(Object.assign(new Error("x"), { status: 400 }), 0)).toBeNull();
 });

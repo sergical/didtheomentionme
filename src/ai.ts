@@ -17,23 +17,30 @@ const READ_HEDGE_MS = 15_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function isRetryable(err: unknown): boolean {
+/**
+ * The wait before the next attempt, or null when a retry cannot help. Error 3021 is the per-minute limit on
+ * inference requests, so it waits for the minute to move on, not for a second.
+ */
+export function retryDelayMs(err: unknown, attempt: number): number | null {
   const status = (err as { status?: number })?.status;
-  if (status !== undefined) return status === 429 || status >= 500;
-  return /\b(429|5\d\d)\b|capacity|overloaded|timed? ?out|temporar|internal/i.test(String((err as Error)?.message ?? err));
+  const message = String((err as Error)?.message ?? err);
+  const rateLimited = status === 429 || /\b(429|3021)\b|rate limit/i.test(message);
+  const retryable = status !== undefined ? rateLimited || status >= 500 : rateLimited || /\b5\d\d\b|capacity|overloaded|timed? ?out|temporar|internal/i.test(message);
+  if (!retryable) return null;
+  return (rateLimited ? 10_000 : 1000) * 2 ** attempt + Math.random() * 500;
 }
 
-/** Calls a model, retrying 429 and 5xx with exponential backoff. The workflow step retries the rest. */
 export async function runModel(env: Env, model: string, inputs: unknown, attempts = 3): Promise<any> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await (env.AI as unknown as AnyRun).run(model, inputs);
     } catch (err) {
-      if (attempt >= attempts - 1 || !isRetryable(err)) throw err;
+      const delay = retryDelayMs(err, attempt);
+      if (attempt >= attempts - 1 || delay === null) throw err;
       const error = String((err as Error)?.message ?? err).slice(0, 300);
       logger.warn(logger.fmt`${model} failed, retry ${attempt + 1} of ${attempts - 1}`, { "gen_ai.request.model": model, error });
       metrics.count("ai.retry", 1, { attributes: { "gen_ai.request.model": model } });
-      await sleep(1000 * 2 ** attempt + Math.random() * 500);
+      await sleep(delay);
     }
   }
 }

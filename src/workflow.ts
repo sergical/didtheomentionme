@@ -26,8 +26,11 @@ import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRu
 
 const DETECT_BATCH = 120;
 const DETECT_CONCURRENCY = 12;
-/** 3 steps of 12 calls send clef-flash about 2,600 calls a minute. The Workers AI limit for image models is 3,000. */
-const DETECT_STEPS = 3;
+/**
+ * Workers AI stops clef-flash at about 1,500 calls a minute (error 3021). 2 steps of 12 calls send about 1,300, and
+ * 3 steps reached the limit.
+ */
+const DETECT_STEPS = 2;
 const READ_CONCURRENCY = 6;
 /** Most runs need 1 to 5 gemma calls, so 3 runs at a time keep gemma under its 300 calls a minute. */
 const READ_RUNS = 3;

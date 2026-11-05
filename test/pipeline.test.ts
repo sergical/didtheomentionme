@@ -144,6 +144,14 @@ describe("groupPosts", () => {
     expect(groups.map((g) => [g.handle, g.firstSeen, g.lastSeen])).toEqual([["@poteto", 1920, 1930]]);
   });
 
+  test("a short post does not join a longer post with the same words", () => {
+    const groups = groupPosts([
+      { second: 0, line: line("@alice", "yes") },
+      { second: 5, line: line("@bob", "yes this completely different post concerns database backups") },
+    ]);
+    expect(groups.map((g) => g.handle)).toEqual(["@alice", "@bob"]);
+  });
+
   test("a placeholder handle joins by text, or keeps its own group", () => {
     const post = "Placeholder handles come from the reader copying its output format";
     const [placeholder] = parseReaderLines(`@handle | display name | ${post}`);

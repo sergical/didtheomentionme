@@ -102,8 +102,10 @@ export interface PostGroup {
 
 const JACCARD_SAME_POST = 0.6;
 
-// A misread handle can match another post's text by chance when the text is short.
 const SAME_TEXT_MIN_CHARS = 40;
+
+/** For two lines under different handles. A short text can match another post's text by chance. */
+export const sameLongPost = (a: string, b: string) => Math.min(a.length, b.length) >= SAME_TEXT_MIN_CHARS && samePost(a, b);
 
 function mostCommon(counts: Map<string, number>): string {
   let best = "";
@@ -157,7 +159,7 @@ export function groupPosts(observations: Observation[]): PostGroup[] {
     const norm = line.handle.toLowerCase();
     const known = line.handle !== UNKNOWN_HANDLE;
     let group = (known ? groups.find((g) => [...g.handles.keys()].some((h) => sameHandle(h.toLowerCase(), norm))) : undefined)
-      ?? (line.text.length >= SAME_TEXT_MIN_CHARS ? groups.find((g) => g.texts.some((t) => samePost(t, line.text))) : undefined);
+      ?? groups.find((g) => g.texts.some((t) => sameLongPost(t, line.text)));
     if (!group) {
       group = {
         handles: new Map(),

@@ -2,7 +2,7 @@ import { logger, metrics } from "@sentry/cloudflare";
 import { embed } from "./ai";
 import { getSource } from "./config";
 import type { Env } from "./env";
-import { overlap, sameHandle, samePost, tokenize } from "./pipeline";
+import { overlap, sameHandle, sameLongPost, samePost, tokenize } from "./pipeline";
 import { step } from "./telemetry";
 import { fetchTweet, parseTweetId, type TweetInfo } from "./tweet";
 
@@ -153,15 +153,31 @@ export function mergeRepeats(matches: Match[]): Match[] {
   return merged;
 }
 
-// Short words like "a" and "of" are in almost every post.
-const contentWords = (text: string) => [...new Set(tokenize(text).filter((t) => t.length > 2))];
+// Short words like "a" and "of" are in almost every post, so they count only in a text that has no other words.
+function contentWords(text: string): string[] {
+  const words = [...new Set(tokenize(text))];
+  const long = words.filter((t) => t.length > 2);
+  return long.length ? long : words;
+}
 
 const quoteScore = (quote: string, post: string) => overlap(contentWords(quote), post);
+const postCoverage = (quote: string, post: string) => overlap(contentWords(post), quote);
 
 export function reading(quote: string, post: string): Reading {
   if (quoteScore(quote, post) < READ_MIN_OVERLAP) return "comment";
-  return overlap(contentWords(post), quote) >= READ_ALL_COVERAGE ? "all" : "part";
+  return postCoverage(quote, post) >= READ_ALL_COVERAGE ? "all" : "part";
 }
+
+/** A reading beats a comment, then a reading of more of the post wins, then the earlier one. */
+function rank({ at, quote }: { at: number; quote: string }, post: string): number[] {
+  const score = quoteScore(quote, post);
+  return [score >= READ_MIN_OVERLAP ? 1 : 0, postCoverage(quote, post), score, -at];
+}
+
+const outranks = (a: number[], b: number[]) => {
+  const i = a.findIndex((x, j) => x !== b[j]);
+  return i >= 0 && a[i] > b[i];
+};
 
 interface Quoted {
   video_id: string;
@@ -177,11 +193,11 @@ interface Quoted {
 export function bestReadings(matches: Match[], quoted: Quoted[]): Match[] {
   return matches.map((m) => {
     const candidates = quoted
-      .filter((r) => r.video_id === m.videoId && samePost(r.text, m.text))
+      .filter((r) => r.video_id === m.videoId && (r.text === m.text || sameLongPost(r.text, m.text)))
       .map((r) => ({ at: r.read_aloud_at, quote: r.quote }));
     if (m.readAloud) candidates.push(m.readAloud);
     if (candidates.length === 0) return m;
-    const best = candidates.reduce((a, b) => (quoteScore(b.quote, m.text) > quoteScore(a.quote, m.text) ? b : a));
+    const best = candidates.reduce((a, b) => (outranks(rank(b, m.text), rank(a, m.text)) ? b : a));
     return { ...m, readAloud: { at: best.at, quote: best.quote, reading: reading(best.quote, m.text) } };
   });
 }

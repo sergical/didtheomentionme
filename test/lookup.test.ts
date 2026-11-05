@@ -64,6 +64,12 @@ describe("reading", () => {
     expect(reading(read, post)).toBe("part");
     expect(reading(read, read)).toBe("all");
   });
+
+  test("counts short words in a post that has only short words", () => {
+    expect(reading("AI is OK", "AI is OK")).toBe("all");
+    expect(reading("...", "AI is OK")).toBe("comment");
+    expect(reading("", "")).toBe("comment");
+  });
 });
 
 describe("bestReadings", () => {
@@ -74,5 +80,22 @@ describe("bestReadings", () => {
       { video_id: "v1", text: "Something else entirely about databases", read_aloud_at: 9, quote: "databases" },
     ]);
     expect(m.readAloud).toEqual({ at: 1924, quote: read, reading: "part" });
+  });
+
+  test("takes the full reading over a partial one, in any row order", () => {
+    const text = "alpha bravo charlie delta echo";
+    const rows = [
+      { video_id: "v1", text, read_aloud_at: 10, quote: "alpha bravo" },
+      { video_id: "v1", text, read_aloud_at: 20, quote: text },
+    ];
+    for (const quoted of [rows, [...rows].reverse()]) {
+      const [m] = bestReadings([match({ text, readAloud: null })], quoted);
+      expect(m.readAloud).toEqual({ at: 20, quote: text, reading: "all" });
+    }
+  });
+
+  test("takes no reading from a short row of another post", () => {
+    const [m] = bestReadings([match({ text: post, readAloud: null })], [{ video_id: "v1", text: "power user", read_aloud_at: 3, quote: "power user" }]);
+    expect(m.readAloud).toBeNull();
   });
 });

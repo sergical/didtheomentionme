@@ -92,7 +92,7 @@ The job, in order:
 Upload = `PUT {uploadBase}/internal/r2/<key>` with `authorization: Bearer <token>` and a content type.
 The Worker sets `uploadBase` to `http://r2.internal`. `MediaContainer.outboundByHost` intercepts that host and
 writes to R2, so uploads do not go through the public Worker URL.
-Use a pool of 16 threads and retry each upload 3 times. `stage` is one of `metadata`, `captions`, `audio`,
+Use a pool of 32 threads and try each upload up to 5 times. `stage` is one of `metadata`, `captions`, `audio`,
 `download`, `frames`, `upload`, `done`. Delete the job's temp dir when it ends.
 
 ## Worker

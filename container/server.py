@@ -17,7 +17,7 @@ from pathlib import Path
 import sentry_sdk
 from sentry_sdk.integrations.stdlib import StdlibIntegration
 
-UPLOAD_THREADS = 16
+UPLOAD_THREADS = 32
 UPLOAD_ATTEMPTS = 5
 NOT_READY_STATES = {"is_live", "is_upcoming", "post_live"}
 ID_PATTERN = re.compile(r"^[\w-]{1,64}$")
@@ -265,21 +265,39 @@ def download_video(video_id, tmp):
 def extract_frames(tmp, video, video_id, uploader):
     for name in ("f640", "f1280"):
         (tmp / name).mkdir()
-    # fps gives a 1/1 time base, so frame_pts names each image by its second, from 0.
-    run_checked(
-        ["ffmpeg", "-v", "error", "-i", str(video), "-an",
-         "-filter_complex", "[0:v]fps=1,split=2[a][b];[a]scale=640:-2[s640];[b]scale=1280:-2[s1280]",
-         "-map", "[s640]", "-q:v", "5", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", str(tmp / "f640" / "%d.jpg"),
-         "-map", "[s1280]", "-q:v", "4", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", str(tmp / "f1280" / "%d.jpg")],
-        "ffmpeg failed",
-    )
-    video.unlink()
-    frames = sorted((int(p.stem) for p in (tmp / "f640").glob("*.jpg")))
-    for second in frames:
+    submitted = set()
+
+    def upload_finished_images():
         for name in ("f640", "f1280"):
-            path = tmp / name / f"{second}.jpg"
-            if path.exists():
-                uploader.submit(f"videos/{video_id}/{name}/{second}.jpg", "image/jpeg", path=path)
+            for path in (tmp / name).glob("*.jpg"):
+                if path not in submitted:
+                    submitted.add(path)
+                    uploader.submit(f"videos/{video_id}/{name}/{path.name}", "image/jpeg", path=path)
+
+    ffmpeg_done = threading.Event()
+
+    def upload_while_ffmpeg_runs():
+        while not ffmpeg_done.wait(1):
+            upload_finished_images()
+
+    watcher = threading.Thread(target=upload_while_ffmpeg_runs, daemon=True)
+    watcher.start()
+    try:
+        # fps gives a 1/1 time base, so frame_pts names each image by its second, from 0.
+        # atomic_writing gives an image its .jpg name only when the image is complete.
+        run_checked(
+            ["ffmpeg", "-v", "error", "-i", str(video), "-an",
+             "-filter_complex", "[0:v]fps=1,split=2[a][b];[a]scale=640:-2[s640];[b]scale=1280:-2[s1280]",
+             "-map", "[s640]", "-q:v", "5", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f640" / "%d.jpg"),
+             "-map", "[s1280]", "-q:v", "4", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f1280" / "%d.jpg")],
+            "ffmpeg failed",
+        )
+    finally:
+        ffmpeg_done.set()
+        watcher.join()
+    video.unlink()
+    upload_finished_images()
+    frames = sorted(int(p.stem) for p in (tmp / "f640").glob("*.jpg"))
     return len(frames), frames
 
 

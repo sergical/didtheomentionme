@@ -286,7 +286,7 @@ def extract_frames(tmp, video, video_id, uploader):
         # fps gives a 1/1 time base, so frame_pts names each image by its second, from 0.
         # atomic_writing gives an image its .jpg name only when the image is complete.
         run_checked(
-            ["ffmpeg", "-v", "error", "-i", str(video), "-an",
+            ["ffmpeg", "-v", "error", "-skip_frame", "noref", "-i", str(video), "-an",
              "-filter_complex", "[0:v]fps=1,split=2[a][b];[a]scale=640:-2[s640];[b]scale=1280:-2[s1280]",
              "-map", "[s640]", "-q:v", "5", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f640" / "%d.jpg"),
              "-map", "[s1280]", "-q:v", "4", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f1280" / "%d.jpg")],

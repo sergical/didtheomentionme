@@ -1,7 +1,8 @@
 import { SOURCES } from "./config";
 import type { Env } from "./env";
 import { formatTime } from "./pipeline";
-import { NEW_TAB, PICKER_SCRIPT, creatorPicker, documentHead, esc, formatDate, hue, plural, youtube, type SourceRef } from "./page";
+import { reading } from "./lookup";
+import { NEW_TAB, PICKER_SCRIPT, PLAY, creatorPicker, documentHead, esc, formatDate, hue, plural, saidFigure, youtube, type SourceRef } from "./page";
 import { explorePath, resultPath, SITE_ORIGIN } from "./share";
 
 export type ExploreSort = "newest" | "posts";
@@ -29,7 +30,8 @@ interface LongRead {
   handle: string;
   displayName: string | null;
   text: string;
-  quote: string | null;
+  quote: string;
+  readAt: number;
   firstSeen: number;
   lastSeen: number;
   frameSecond: number;
@@ -70,6 +72,8 @@ export interface ExploreData {
 
 const TOP_ACCOUNTS = 12;
 const LONG_READS = 4;
+// Most stored quotes are comments, not readings, so the query asks for more rows than the page shows.
+const LONG_READ_CANDIDATES = 40;
 const ACCOUNTS_PER_VIDEO = 24;
 const POSITION_BINS = 10;
 
@@ -101,11 +105,11 @@ export async function exploreData(env: Env, source: SourceRef, sources: SourceRe
     ),
     // Read aloud keeps out posts in a sidebar, which can stay on screen for a whole stream.
     all<LongRead>(
-      `SELECT m.video_id AS videoId, v.title, m.handle, m.display_name AS displayName, m.text, m.quote,
+      `SELECT m.video_id AS videoId, v.title, m.handle, m.display_name AS displayName, m.text, m.quote, m.read_aloud_at AS readAt,
          m.first_seen AS firstSeen, m.last_seen AS lastSeen, m.frame_second AS frameSecond
        FROM mentions m ${DONE} AND m.read_aloud_at IS NOT NULL
        ORDER BY m.last_seen - m.first_seen DESC LIMIT ?`,
-      source.id, LONG_READS,
+      source.id, LONG_READ_CANDIDATES,
     ),
     all<Omit<Video, "accounts">>(
       `SELECT v.id, v.title, v.published_at AS publishedAt, v.duration, COUNT(m.id) AS shown,
@@ -151,10 +155,21 @@ export async function exploreData(env: Env, source: SourceRef, sources: SourceRe
     totals: { ...videoTotals, ...mentionTotals },
     accounts,
     position,
-    longReads,
+    longReads: realReads(longReads),
     videos: videos.map((v) => ({ ...v, accounts: byVideo.get(v.id) ?? [] })),
     crossovers,
   };
+}
+
+/** Readings, not comments, with one card for each frame or quote. Two rows can share both when one post was read twice. */
+function realReads(rows: LongRead[]): LongRead[] {
+  const seen = new Set<string>();
+  return rows.filter((r) => {
+    const keys = [`${r.videoId}:${r.frameSecond}`, `${r.videoId}:${r.quote}`];
+    if (reading(r.quote, r.text) === "comment" || keys.some((k) => seen.has(k))) return false;
+    keys.forEach((k) => seen.add(k));
+    return true;
+  }).slice(0, LONG_READS);
 }
 
 const EXPLORE_STYLE = `
@@ -206,7 +221,6 @@ main.explore { max-width: 46rem; }
 .reads { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
 @media (min-width: 40rem) { .reads { grid-template-columns: 1fr 1fr; } }
 .reads .match { animation: none; }
-.reads .post p { -webkit-line-clamp: 4; }
 .reads blockquote { -webkit-line-clamp: 3; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 
 .sorts { display: flex; gap: .25rem; margin: 0 0 .75rem; }
@@ -298,23 +312,20 @@ function position(data: ExploreData): string {
 </section>`;
 }
 
+const minutes = (seconds: number) => (seconds < 60 ? `${seconds} s` : `${Math.round(seconds / 60)} min`);
+
 function longReads({ longReads: list, source }: ExploreData): string {
   if (list.length === 0) return "";
   const cards = list.map((r) => {
     const name = r.displayName || r.handle.replace(/^@/, "");
-    const minutes = formatTime(r.lastSeen - r.firstSeen);
+    const at = youtube(r.videoId, r.firstSeen);
     return `<li class="match">
-<div class="frame">
-<a class="cover" ${NEW_TAB} href="${youtube(r.videoId, r.firstSeen)}" tabindex="-1" aria-hidden="true"><img src="/frame/${esc(r.videoId)}/${r.frameSecond}.jpg" alt="" loading="lazy" decoding="async"></a>
-<span class="chips"><a class="chip" ${NEW_TAB} href="${youtube(r.videoId, r.firstSeen)}">${minutes} on screen</a></span>
-</div>
+<a class="frame" ${NEW_TAB} href="${at}" tabindex="-1" aria-hidden="true"><img src="/frame/${esc(r.videoId)}/${r.frameSecond}.jpg" alt="" loading="lazy" decoding="async"></a>
 <div class="body">
-<div class="video"><a ${NEW_TAB} href="${youtube(r.videoId, r.firstSeen)}">${esc(r.title ?? r.videoId)}</a></div>
-<div class="post">
-<div class="avatar" style="--hue:${hue(r.handle)}" aria-hidden="true">${esc(name.charAt(0).toUpperCase())}</div>
-<div><div class="who"><b>${esc(name)}</b><span>${esc(r.handle)}</span></div><p>${esc(r.text)}</p></div>
-</div>
-${r.quote ? `<figure class="aloud"><figcaption>${esc(source.name)} read it aloud</figcaption><blockquote>${esc(r.quote)}</blockquote></figure>` : ""}
+<div class="video"><a ${NEW_TAB} href="${at}">${esc(r.title ?? r.videoId)}</a></div>
+<p class="who"><b>${esc(name)}</b><span>${esc(r.handle)}</span></p>
+${saidFigure(source.name, r.videoId, { at: r.readAt, quote: r.quote, reading: reading(r.quote, r.text) })}
+<p class="times"><span>On screen for ${minutes(r.lastSeen - r.firstSeen)} from</span><a class="chip" ${NEW_TAB} href="${at}">${PLAY}${formatTime(r.firstSeen)}</a></p>
 </div>
 </li>`;
   });

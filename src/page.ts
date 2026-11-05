@@ -1,6 +1,6 @@
 import { explorePath, resultPath, shareTitle, SITE_ORIGIN } from "./share";
 import { formatTime } from "./pipeline";
-import type { LookupInput, LookupResult, Match } from "./lookup";
+import type { LookupInput, LookupResult, Match, Reading } from "./lookup";
 
 const escapes: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 export const esc = (value: string | number | null | undefined) => String(value ?? "").replace(/[&<>"']/g, (c) => escapes[c]);
@@ -169,51 +169,42 @@ button .spinner { position: absolute; inset: 0; margin: auto; width: 1em; height
 .match { overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow);
   animation: rise 320ms var(--ease-out) both; animation-delay: calc(80ms + min(var(--i), 5) * 40ms); }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
-.frame { position: relative; aspect-ratio: 16 / 9; background: var(--surface-2); }
-.frame .cover, .frame img { display: block; width: 100%; height: 100%; }
-.frame img { object-fit: cover; }
-a.frame { display: block; }
-.frame:has(.chips)::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to top, oklch(0 0 0 / 0.55), transparent 45%); }
-.chips { position: absolute; z-index: 1; left: .75rem; bottom: .75rem; right: .75rem; display: flex; flex-wrap: wrap; gap: .375rem; }
-.chip { display: inline-flex; align-items: center; gap: .375rem; padding: .25rem .625rem; border-radius: 99px; font-size: .8125rem; font-weight: 600;
-  font-variant-numeric: tabular-nums; color: white; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-.chip.hot { background: var(--accent); color: var(--accent-ink); }
-a.chip { position: relative; text-decoration: none; transition: transform 150ms var(--ease-out); }
-a.chip:active { transform: scale(0.96); }
-a.chip::before { content: ""; position: absolute; inset: -.5rem -.125rem; }
-a.chip:focus-visible { outline: 2px solid white; outline-offset: 2px; }
-.chip svg { width: .75em; height: .75em; }
+a.frame { display: block; aspect-ratio: 16 / 9; background: var(--surface-2); }
+.frame img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .body { padding: 1rem 1.125rem 1.125rem; display: grid; gap: .875rem; }
 .video { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem .75rem; }
 .video a { font-weight: 650; text-decoration: none; letter-spacing: -0.01em; }
 @media (hover: hover) and (pointer: fine) { .video a:hover { text-decoration: underline; text-underline-offset: 3px; } }
 .video time { font-size: .8125rem; color: var(--muted); white-space: nowrap; }
-.post { display: grid; grid-template-columns: 2.25rem 1fr; gap: .75rem; padding: .875rem; border-radius: 12px; background: var(--surface-2); }
 .avatar { width: 2.25rem; height: 2.25rem; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: .9375rem;
   color: oklch(0.2 0.03 var(--hue)); background: oklch(0.82 0.1 var(--hue)); }
-.who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .375rem; line-height: 1.3; }
+.who { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .375rem; line-height: 1.3; }
 .who b { font-weight: 650; }
 .who span { color: var(--muted); font-size: .9375rem; }
 .badge { align-self: center; padding: .0625rem .5rem; border-radius: 99px; font-size: .75rem; font-weight: 600; color: var(--accent); background: var(--accent-soft); }
-.post p { margin: .25rem 0 0; white-space: pre-line; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }
 mark { background: var(--accent-soft); color: inherit; border-radius: 3px; box-shadow: 0 0 0 1px var(--accent-soft); }
-.aloud { margin: 0; padding-left: 1rem; border-left: 2px solid var(--accent); }
-.aloud figcaption { font-size: .8125rem; color: var(--muted); }
-.aloud blockquote { margin: .25rem 0 0; font-size: 1.0625rem; line-height: 1.5; text-wrap: pretty; }
-.aloud blockquote::before { content: "\\201C"; }
-.aloud blockquote::after { content: "\\201D"; }
 .quiet { margin: 0; font-size: .875rem; color: var(--muted); }
 .excerpt { margin: 0; font-size: .9375rem; color: var(--muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.said blockquote { margin: 0; font-size: 1.1875rem; line-height: 1.45; letter-spacing: -0.01em; }
-.said figcaption { margin-top: .375rem; font-size: .875rem; }
+.said { margin: 0; padding-left: 1rem; border-left: 2px solid var(--accent); }
+.said blockquote { margin: 0; font-size: 1.1875rem; line-height: 1.45; letter-spacing: -0.01em; text-wrap: pretty; }
+.said blockquote::before { content: "\\201C"; }
+.said blockquote::after { content: "\\201D"; }
+.said.comment { border-left-color: var(--line-strong); }
+.said.comment blockquote { font-size: 1rem; line-height: 1.5; letter-spacing: 0; color: var(--muted); }
+.said figcaption { margin-top: .375rem; font-size: .875rem; color: var(--muted); }
 .said figcaption::before { content: "\\2014\\00A0"; }
 .said a, .quiet a { color: inherit; font-variant-numeric: tabular-nums; text-underline-offset: 3px; }
 .times { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: .375rem; font-size: .8125rem; color: var(--muted); }
 .times > span:first-child { margin-right: .125rem; }
-.times .chip { min-height: 1.75rem; color: var(--fg); background: var(--surface-2); backdrop-filter: none; -webkit-backdrop-filter: none; }
 .times .badge { margin-left: auto; }
-.times a.chip:focus-visible { outline-color: var(--fg); }
-@media (hover: hover) and (pointer: fine) { .times a.chip { transition-property: transform, background-color; } .times a.chip:hover { background: var(--line); } }
+.chip { position: relative; display: inline-flex; align-items: center; gap: .375rem; min-height: 1.75rem; padding: .25rem .625rem; border-radius: 99px;
+  font-size: .8125rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg); background: var(--surface-2); text-decoration: none;
+  transition: transform 150ms var(--ease-out); }
+.chip:active { transform: scale(0.96); }
+.chip::before { content: ""; position: absolute; inset: -.5rem -.125rem; }
+.chip:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.chip svg { width: .75em; height: .75em; }
+@media (hover: hover) and (pointer: fine) { .chip { transition-property: transform, background-color; } .chip:hover { background: var(--line); } }
 
 .more { margin-top: 1rem; }
 .more > summary { display: flex; align-items: center; justify-content: center; gap: .5rem; min-height: 44px; padding: .5rem 1rem;
@@ -381,26 +372,34 @@ function verdict(result: LookupResult, close: Match[], loose: Match[]): string {
       : `Handle cropped out of the screenshot? ${switchTab("text", "Search by words from the post")}.`;
     return section("no", "Not yet.", `Nothing in the ${plural(videos, "video")} from ${esc(formatDate(from, false))} to ${esc(formatDate(to))}. ${next}`);
   }
-  const aloud = close.filter((m) => m.readAloud).length;
+  const read = close.filter((m) => m.readAloud && m.readAloud.reading !== "comment").length;
+  const talked = close.filter((m) => m.readAloud?.reading === "comment").length;
   const one = close.length === 1;
   const shown = result.query
     ? `${esc(name)} showed ${plural(close.length, "post")} with that text`
     : `${esc(name)} showed ${one ? "your post" : `${close.length} of your posts`}`;
-  const all = one ? "it" : close.length === 2 ? "both" : "every one";
-  const read = aloud === 0 ? `, but did not read ${one ? "it" : "them"} aloud.` : aloud === close.length ? ` and read ${all} aloud.` : ` and read ${aloud} aloud.`;
-  return section("yes", "Yes.", shown + read);
+  const count = (n: number) => (n < close.length ? String(n) : one ? "it" : close.length === 2 ? "both" : "every one");
+  const readCount = one && close[0].readAloud?.reading === "part" ? "part of it" : count(read);
+  const notRead = `but did not read ${one ? "it" : "them"} aloud.`;
+  const said = read && talked
+    ? `, read ${readCount} aloud and talked about ${count(talked)}.`
+    : read ? ` and read ${readCount} aloud.`
+    : talked ? ` and talked about ${count(talked)}, ${notRead}`
+    : `, ${notRead}`;
+  return section("yes", "Yes.", shown + said);
 }
+
+const READING_CAPTION: Record<Reading, string> = { all: "read it aloud", part: "read part of it aloud", comment: "talked about it" };
+
+export const saidFigure = (sourceName: string, videoId: string, { at, quote, reading }: NonNullable<Match["readAloud"]>) =>
+  `<figure class="said${reading === "comment" ? " comment" : ""}"><blockquote>${esc(quote)}</blockquote>
+<figcaption>${esc(sourceName)} ${READING_CAPTION[reading]} at <a ${NEW_TAB} href="${youtube(videoId, at)}">${formatTime(at)}</a></figcaption></figure>`;
 
 function card(m: Match, i: number, words: Set<string>, sourceName: string, showText: boolean, eager: boolean): string {
   const seen = m.times
     .map((t, n) => `<a class="chip" ${NEW_TAB} href="${youtube(m.videoId, t)}">${n === 0 ? PLAY : ""}<span class="sr-only">On screen at </span>${formatTime(t)}</a>`)
     .join("");
-  const said = m.readAloud?.quote
-    ? `<figure class="aloud said"><blockquote>${esc(m.readAloud.quote)}</blockquote>
-<figcaption>${esc(sourceName)} at <a ${NEW_TAB} href="${youtube(m.videoId, m.readAloud.at)}">${formatTime(m.readAloud.at)}</a></figcaption></figure>`
-    : m.readAloud
-      ? `<p class="quiet">${esc(sourceName)} read it aloud at <a ${NEW_TAB} href="${youtube(m.videoId, m.readAloud.at)}">${formatTime(m.readAloud.at)}</a>.</p>`
-      : `<p class="quiet">Not read aloud.</p>`;
+  const said = m.readAloud ? saidFigure(sourceName, m.videoId, m.readAloud) : `<p class="quiet">Not read aloud.</p>`;
   return `<li class="match" id="mention-${esc(m.videoId)}-${m.firstSeen}" style="--i:${i}">
 <a class="frame" ${NEW_TAB} href="${youtube(m.videoId, m.firstSeen)}" tabindex="-1" aria-hidden="true"><img src="${esc(m.frameUrl)}" alt="" loading="${eager && i < 2 ? "eager" : "lazy"}" decoding="async"></a>
 <div class="body">

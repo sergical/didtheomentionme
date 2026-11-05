@@ -5,7 +5,7 @@ import { resultPath, shareTitle } from "../src/share";
 const source = { id: "prime", name: "Prime", avatar: "https://example.com/avatar.jpg", hue: 55, coverage: { videos: 1, from: null, to: null } };
 const data: PageData = {
   source, sources: [source], input: { handle: "theo", tweet: "", source: "prime" },
-  result: { source, handle: "theo", coverage: source.coverage, matches: [{ videoId: "abc", title: "Video <title>", publishedAt: null, handle: "@theo", displayName: null, text: "A post", firstSeen: 12, lastSeen: 20, times: [12, 40], frameUrl: "/frame/abc/12.jpg", exact: false, readAloud: { at: 14, quote: "A post" } }] },
+  result: { source, handle: "theo", coverage: source.coverage, matches: [{ videoId: "abc", title: "Video <title>", publishedAt: null, handle: "@theo", displayName: null, text: "A post", firstSeen: 12, lastSeen: 20, times: [12, 40], frameUrl: "/frame/abc/12.jpg", exact: false, readAloud: { at: 14, quote: "A post", reading: "all" } }] },
 };
 
 test("all video entry points open a safe new tab with a screen reader hint", () => {
@@ -41,4 +41,17 @@ test("a text search excerpt starts near the first matching word", () => {
   const html = renderPage({ ...data, input: { handle: "", tweet: "", q: "needle", source: "prime" }, result: { ...data.result!, query: "needle", matches: [match] } });
   expect(html).toMatch(/<p class="excerpt">…[^<]{0,60}<mark>needle<\/mark> is here<\/p>/);
   expect(html).toContain('<span class="sr-only">On screen at </span>');
+});
+
+test("the verdict and the card say how much was read", () => {
+  const [first] = data.result!.matches;
+  const render = (...readings: ("all" | "part" | "comment" | null)[]) => renderPage({ ...data, result: { ...data.result!, matches: readings.map((reading, i) => ({
+    ...first, videoId: `v${i}`, readAloud: reading && { at: 14, quote: "Back to what they said", reading },
+  })) } });
+  expect(render("part")).toContain("Prime showed your post and read part of it aloud.");
+  expect(render("part")).toContain("Prime read part of it aloud at");
+  expect(render("comment")).toContain("Prime showed your post and talked about it, but did not read it aloud.");
+  expect(render("comment")).toContain('<figure class="said comment">');
+  expect(render("all", "comment", null)).toContain("Prime showed 3 of your posts, read 1 aloud and talked about 1.");
+  expect(render(null, null)).toContain("Prime showed 2 of your posts, but did not read them aloud.");
 });

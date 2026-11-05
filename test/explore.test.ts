@@ -33,7 +33,7 @@ beforeEach(() => {
   video("skipped", "theo", "2026-10-02", 1000, "skipped");
   video("p1", "prime", "2026-09-01");
   mention("old", "@dev", 50);
-  mention("old", "@dev", 1050, 1200, "read <this> out");
+  mention("old", "@dev", 1050, 1200, "post by <dev>");
   mention("old", "@ThePrimeagen", 120);
   mention("new", "@dev", 500);
   mention("skipped", "@dev", 10);
@@ -69,8 +69,9 @@ describe("exploreData", () => {
 describe("renderExplore", () => {
   test("escapes post text and quotes, and says when a video has no posts", async () => {
     const html = renderExplore(await explore());
-    expect(html).toContain("read &lt;this&gt; out");
-    expect(html).not.toContain("<this>");
+    expect(html).toContain("post by &lt;dev&gt;");
+    expect(html).not.toContain("<dev>");
+    expect(html).toContain("On screen for 3 min from");
     expect(html).toContain("No X posts found on screen.");
     expect(html).toContain('href="/explore?source=theo&amp;sort=posts#videos"');
     expect(html).toContain("Theo showed <a");

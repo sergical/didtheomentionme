@@ -71,7 +71,7 @@ function imageSvg(name: string, accent: string, result: LookupResult | undefined
 <text x="62" y="434" font-size="23" fill="#c4b9c9">${count ? `${xml(name)} put you on screen ${count === 1 ? "once" : `${count} times`}.` : "Search the latest indexed videos."}</text>
 <path d="M60 522h1080" stroke="#403445"/>
 <text x="60" y="575" font-size="22" fill="#c4b9c9">didtheomentionme</text>
-<text x="1140" y="575" text-anchor="end" font-size="22" fill="${accent}">${first?.readAloud ? "Shown. Read aloud. Found." : "Find the moment. Keep the receipt."}</text>`
+<text x="1140" y="575" text-anchor="end" font-size="22" fill="${accent}">${first?.readAloud && first.readAloud.reading !== "comment" ? "Shown. Read aloud. Found." : "Find the moment. Keep the receipt."}</text>`
     : `<text x="128" y="91" font-size="24" fill="#c4b9c9">didtheomentionme</text>
 <text x="60" y="318" font-size="84" letter-spacing="-3">Did ${xml(name)}</text>
 <text x="60" y="408" font-size="84" letter-spacing="-3">mention <tspan fill="${accent}">me?</tspan></text>

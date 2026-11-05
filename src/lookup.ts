@@ -27,7 +27,7 @@ export interface Match {
   times: number[];
   frameUrl: string;
   exact: boolean;
-  readAloud: { at: number; quote: string | null } | null;
+  readAloud: { at: number; quote: string; reading: Reading } | null;
   /** Text search only: share of the query words in `text`. */
   overlap?: number;
 }
@@ -43,6 +43,9 @@ export interface LookupResult {
   matches: Match[];
 }
 
+/** How much of the post a quote reads out. "comment" means the speaker only talked about the post. */
+export type Reading = "all" | "part" | "comment";
+
 /** Bad user input; the message is safe to show. */
 export class LookupError extends Error {}
 
@@ -55,6 +58,9 @@ const FTS_WORDS = 12;
 const FTS_MIN_OVERLAP = 0.5;
 const MIN_QUERY_WORDS = 2;
 const SAME_POST_CONTAINMENT = 0.8;
+// Below this share of quote words in the post, a quote is a lead-in or a comment, such as "Back to what Zig said here."
+const READ_MIN_OVERLAP = 0.4;
+const READ_ALL_COVERAGE = 0.6;
 
 interface Row {
   id: number;
@@ -154,6 +160,56 @@ function samePost(a: string, b: string): boolean {
   return overlap([...new Set(tokenize(short))], long) >= SAME_POST_CONTAINMENT;
 }
 
+// Short words like "a" and "of" are in almost every post.
+const contentWords = (text: string) => [...new Set(tokenize(text).filter((t) => t.length > 2))];
+
+const quoteScore = (quote: string, post: string) => overlap(contentWords(quote), post);
+
+export function reading(quote: string, post: string): Reading {
+  if (quoteScore(quote, post) < READ_MIN_OVERLAP) return "comment";
+  return overlap(contentWords(post), quote) >= READ_ALL_COVERAGE ? "all" : "part";
+}
+
+interface Quoted {
+  video_id: string;
+  text: string;
+  read_aloud_at: number;
+  quote: string;
+}
+
+/**
+ * The pipeline can store one post twice, once under a misread handle, and put the real reading on the other row.
+ * So each match takes the quote from the same post in the same video that reads most of the post's words.
+ */
+export function bestReadings(matches: Match[], quoted: Quoted[]): Match[] {
+  return matches.map((m) => {
+    const candidates = quoted
+      .filter((r) => r.video_id === m.videoId && samePost(r.text, m.text))
+      .map((r) => ({ at: r.read_aloud_at, quote: r.quote }));
+    if (m.readAloud) candidates.push(m.readAloud);
+    if (candidates.length === 0) return m;
+    const best = candidates.reduce((a, b) => (quoteScore(b.quote, m.text) > quoteScore(a.quote, m.text) ? b : a));
+    return { ...m, readAloud: { at: best.at, quote: best.quote, reading: reading(best.quote, m.text) } };
+  });
+}
+
+async function quotedIn(env: Env, videoIds: string[]): Promise<Quoted[]> {
+  if (videoIds.length === 0) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT video_id, text, read_aloud_at, quote FROM mentions
+     WHERE quote IS NOT NULL AND read_aloud_at IS NOT NULL AND video_id IN (SELECT value FROM json_each(?))`,
+  )
+    .bind(JSON.stringify([...new Set(videoIds)]))
+    .all<Quoted>();
+  return results;
+}
+
+/** One match per post, each with its best reading. */
+async function toMatches(env: Env, rows: Row[], exact: (r: Row) => boolean): Promise<Match[]> {
+  const merged = mergeRepeats(rows.map((r) => toMatch(r, exact(r))));
+  return bestReadings(merged, await quotedIn(env, merged.map((m) => m.videoId)));
+}
+
 const newestFirst = (a: Match, b: Match) =>
   (b.publishedAt ?? "").localeCompare(a.publishedAt ?? "") || a.firstSeen - b.firstSeen;
 
@@ -175,7 +231,7 @@ async function search(env: Env, input: LookupInput): Promise<LookupResult> {
     const tokens = queryTokens(query);
     if (tokens.length < MIN_QUERY_WORDS) throw new LookupError("Enter a few words from the post.");
     const ids = await textMatches(env, source.id, query, query);
-    const matches = mergeRepeats((await findMentions(env, source.id, { ids: [...ids] })).map((r) => toMatch(r, false)))
+    const matches = (await toMatches(env, await findMentions(env, source.id, { ids: [...ids] }), () => false))
       .map((m) => ({ ...m, overlap: overlap(tokens, m.text) }))
       .sort((a, b) => b.overlap - a.overlap || newestFirst(a, b));
     return { source: { id: source.id, name: source.name }, handle: null, query, coverage: await coverage(env, source.id), matches };
@@ -200,7 +256,7 @@ async function search(env: Env, input: LookupInput): Promise<LookupResult> {
 
   const textMatchIds = tweet ? await textMatches(env, source.id, tweet.text, `@${tweet.handle}: ${tweet.text}`) : new Set<number>();
   const rows = await findMentions(env, source.id, { handleNorm, ids: [...textMatchIds] });
-  const matches = mergeRepeats(rows.map((r) => toMatch(r, r.handle_norm === handleNorm && textMatchIds.has(r.id))))
+  const matches = (await toMatches(env, rows, (r) => r.handle_norm === handleNorm && textMatchIds.has(r.id)))
     .sort((a, b) => Number(b.exact) - Number(a.exact) || newestFirst(a, b));
 
   return {
@@ -250,5 +306,5 @@ const toMatch = (r: Row, exact: boolean): Match => ({
   times: [r.first_seen],
   frameUrl: `/frame/${r.video_id}/${r.frame_second}.jpg`,
   exact,
-  readAloud: r.read_aloud_at == null ? null : { at: r.read_aloud_at, quote: r.quote },
+  readAloud: r.read_aloud_at == null || !r.quote ? null : { at: r.read_aloud_at, quote: r.quote, reading: reading(r.quote, r.text) },
 });

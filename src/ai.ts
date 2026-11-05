@@ -123,10 +123,38 @@ export async function transcribe(env: Env, mp3: ArrayBuffer, offsetSeconds: numb
   return wordsFromSegments(result?.segments ?? [], offsetSeconds);
 }
 
-export async function embed(env: Env, texts: string[]): Promise<number[][]> {
-  const result = await withEstimatedInputTokens(texts, () => runModel(env, EMBED, { text: texts }));
-  if (!Array.isArray(result?.data) || result.data.length !== texts.length) {
-    throw new Error(`bge-m3 returned ${result?.data?.length} vectors for ${texts.length} texts`);
+/** bge-m3 pads each text to the longest one in its request, and counts the padded tokens against this limit. */
+const EMBED_REQUEST_TOKENS = 60_000;
+/** English posts measured 3.7 characters per token. URLs, code and other scripts have fewer. */
+const EMBED_CHARS_PER_TOKEN = 3;
+
+/** Splits texts into bge-m3 requests whose padded size fits `EMBED_REQUEST_TOKENS`. */
+export function embedRequests(texts: string[]): string[][] {
+  const requests: string[][] = [];
+  let request: string[] = [];
+  let longest = 0;
+  for (const text of texts) {
+    const tokens = Math.ceil(text.length / EMBED_CHARS_PER_TOKEN);
+    if (request.length && (request.length + 1) * Math.max(longest, tokens) > EMBED_REQUEST_TOKENS) {
+      requests.push(request);
+      request = [];
+      longest = 0;
+    }
+    request.push(text);
+    longest = Math.max(longest, tokens);
   }
-  return result.data;
+  if (request.length) requests.push(request);
+  return requests;
+}
+
+export async function embed(env: Env, texts: string[]): Promise<number[][]> {
+  const vectors: number[][] = [];
+  for (const request of embedRequests(texts)) {
+    const result = await withEstimatedInputTokens(request, () => runModel(env, EMBED, { text: request }));
+    if (!Array.isArray(result?.data) || result.data.length !== request.length) {
+      throw new Error(`bge-m3 returned ${result?.data?.length} vectors for ${request.length} texts`);
+    }
+    vectors.push(...result.data);
+  }
+  return vectors;
 }

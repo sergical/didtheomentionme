@@ -23,6 +23,11 @@ export function destroyContainer(env: Env, name: string): Promise<void> {
   return step("container destroy", () => getContainer(env.MEDIA, name).destroy());
 }
 
+/** The container sends a `stopped` event to this workflow instance if it stops while the instance waits. */
+export function watchContainerJob(env: Env, name: string, instanceId: string): Promise<void> {
+  return getContainer(env.MEDIA, name).watchJob(instanceId);
+}
+
 const now = () => new Date().toISOString();
 
 /** Normalises dates from RSS and yt-dlp so they sort as plain strings. */

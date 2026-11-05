@@ -87,6 +87,7 @@ export async function phase<T>(
   step: PhaseStep,
   fn: (step: PhaseStep) => Promise<T>,
   attributes?: Record<string, string | number | boolean>,
+  op = "workflow.phase",
 ): Promise<T> {
   const start = `phase:${[name, ...Object.values(attributes ?? {})].join(":")}`;
   const { spanId, startedAt } = await step.do(start, {}, async () => ({
@@ -98,7 +99,16 @@ export async function phase<T>(
     scope.setPropagationContext({ ...context, parentSpanId: spanId });
     const end = (failed: boolean) =>
       step.do(`${start}:end`, {}, async () => {
-        const span = new SentrySpan({ traceId: context.traceId, spanId, name, op: "workflow.phase", attributes, startTimestamp: startedAt / 1000, sampled: true });
+        const span = new SentrySpan({
+          traceId: context.traceId,
+          spanId,
+          parentSpanId: context.parentSpanId,
+          name,
+          op,
+          attributes,
+          startTimestamp: startedAt / 1000,
+          sampled: true,
+        });
         if (failed) span.setStatus({ code: 2, message: "internal_error" });
         span.end();
       });
@@ -112,6 +122,10 @@ export async function phase<T>(
     }
   });
 }
+
+/** waitForEvent makes no span, so the wait runs as a phase of its own. A timeout ends that span as an error. */
+export const waitForEvent = <T extends Rpc.Serializable<T>>(step: PhaseStep, name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }) =>
+  phase(name, step, (step) => step.waitForEvent<T>(name, options), undefined, "workflow.wait");
 
 /** bge-m3 returns no token usage, so its embeddings span gets an estimate of 4 characters per token. */
 export const withEstimatedInputTokens = <T>(texts: string[], fn: () => Promise<T>) =>

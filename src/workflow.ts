@@ -21,8 +21,8 @@ import {
   type Word,
 } from "./pipeline";
 import { EXTRACT_EVENT, JOB_PROTOCOL, UPLOAD_HOST } from "./container";
-import { phase, sentryOptions, step as traceStep, type PhaseStep } from "./telemetry";
-import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
+import { phase, sentryOptions, step as traceStep, waitForEvent, type PhaseStep } from "./telemetry";
+import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun, watchContainerJob } from "./videos";
 
 const DETECT_BATCH = 120;
 const DETECT_CONCURRENCY = 12;
@@ -53,8 +53,9 @@ type Manifest = {
 };
 
 type JobStatus = {
-  state: "running" | "done" | "error";
+  state: "running" | "done" | "error" | "stopped";
   stage: string | null;
+  restarted?: boolean;
   uploaded?: number;
   total?: number;
   error: string | null;
@@ -152,6 +153,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
   }
 
   private async startJob(videoId: string, instanceId: string): Promise<void> {
+    // Before the POST, so a container that stops as soon as the job starts still reports it.
+    await watchContainerJob(this.env, videoId, instanceId);
     const res = await containerFetch(this.env, videoId, "/jobs", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -166,8 +169,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
   }
 
   /**
-   * The job status when its event did not come. A container that lost its job may have finished it first: then
-   * the manifest is in R2, because the job writes it last. Otherwise the job starts again.
+   * The job status when its event did not come or its container stopped. A container that lost its job may have
+   * finished it first: then the manifest is in R2, because the job writes it last. Otherwise the job starts again.
    */
   private async checkJob(videoId: string, instanceId: string): Promise<JobStatus> {
     const res = await containerFetch(this.env, videoId, `/jobs/${videoId}`);
@@ -175,7 +178,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       const manifest = await (await this.env.BUCKET.get(key(videoId, "manifest.json")))?.json<Manifest>();
       if (manifest) return { state: "done", stage: "done", error: null, manifest };
       await this.startJob(videoId, instanceId);
-      return { state: "running", stage: null, error: null, manifest: null };
+      return { state: "running", stage: null, error: null, manifest: null, restarted: true };
     }
     if (!res.ok) throw new Error(`container GET /jobs: ${res.status}`);
     const job = (await res.json()) as JobStatus;
@@ -190,14 +193,17 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
 
   private async extract(videoId: string, instanceId: string, step: PhaseStep): Promise<Manifest | "not_ready"> {
     await step.do("extract-start", START_STEP, () => this.startJob(videoId, instanceId));
-    for (let i = 0; i < MAX_EXTRACT_WAITS; i++) {
+    // Only a timeout or a restart uses up a wait. A stop event from a container that is gone, with the job
+    // still running, does not.
+    for (let wait = 0, used = 0; used < MAX_EXTRACT_WAITS; wait++) {
       // Step names must differ, but only a job that outlives its first wait needs a number.
-      const retry = i ? `-${i}` : "";
-      let job: JobStatus;
-      try {
-        job = (await step.waitForEvent<JobStatus>(`extract-done${retry}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })).payload;
-      } catch {
+      const retry = wait ? `-${wait}` : "";
+      const event = await waitForEvent<JobStatus>(step, `extract-done${retry}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })
+        .then((event) => event.payload, () => null);
+      let job = event;
+      if (!job || job.state === "stopped") {
         job = await step.do(`extract-check${retry}`, START_STEP, () => this.checkJob(videoId, instanceId));
+        if (!event || job.restarted) used++;
       }
       if (job.state === "running") continue;
       await step.do("extract-release", IO_STEP, () => destroyContainer(this.env, videoId));
@@ -216,7 +222,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
           .run();
         logger.info(logger.fmt`Extracted ${manifest.frames} frames from ${manifest.duration ?? "?"} s of video, captions: ${manifest.hasCaptions}`, {
           "video.id": videoId,
-          "extract.waits": i + 1,
+          "extract.waits": wait + 1,
         });
         if (manifest.captionsError) {
           logger.warn(logger.fmt`No captions for ${videoId}, using whisper: ${manifest.captionsError}`, { "video.id": videoId });
@@ -225,7 +231,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       });
       return manifest;
     }
-    throw new NonRetryableError("extract did not finish within 90 minutes");
+    throw new NonRetryableError(`extract did not finish after ${MAX_EXTRACT_WAITS} timeouts or restarts`);
   }
 
   private async transcribeAudio(videoId: string, chunks: number, step: PhaseStep): Promise<void> {

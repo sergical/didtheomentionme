@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import * as Sentry from "@sentry/cloudflare";
 import { embed } from "../src/ai";
 import type { Env } from "../src/env";
-import { phase, sentryOptions, type PhaseStep } from "../src/telemetry";
+import { phase, sentryOptions, waitForEvent, type PhaseStep } from "../src/telemetry";
 
 const require = createRequire(import.meta.resolve("@sentry/cloudflare"));
 const { instrumentWorkersAiClient } = require("@sentry/server-utils");
@@ -60,7 +60,7 @@ test("workflow steps nest under one phase span each, sent once, across restarts 
     async run(_event: unknown, step: PhaseStep) {
       await phase("extract", step, async (step) => {
         await step.do("extract-start", config, async () => 0);
-        await step.waitForEvent("extract-done", { type: "extract-done" });
+        await waitForEvent(step, "extract-done", { type: "extract-done" });
         await step.do("extract-check", config, async () => 1);
       });
       await phase("transcribe", step, async (step) => {
@@ -94,6 +94,10 @@ test("workflow steps nest under one phase span each, sent once, across restarts 
     }
   }
   expect(extract.start_timestamp).toBeLessThanOrEqual(named("extract-start")[0].start_timestamp);
+  expect(named("extract-done")).toHaveLength(1);
+  expect(named("extract-done")[0]).toMatchObject({ parent_span_id: extract.span_id });
+  expect(attribute(named("extract-done")[0], "sentry.op")).toBe("workflow.wait");
+  expect(phases.map((span) => span.parent_span_id)).toEqual([undefined, undefined, undefined]);
   expect(named("store-db")[0].parent_span_id).toBe(store.span_id);
   expect(sent.filter((span) => span.name.startsWith("phase:"))).toHaveLength(0);
   expect(new Set(sent.map((span) => span.trace_id)).size).toBe(1);

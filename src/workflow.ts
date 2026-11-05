@@ -20,7 +20,7 @@ import {
   type Run,
   type Word,
 } from "./pipeline";
-import { EXTRACT_EVENT, UPLOAD_HOST } from "./container";
+import { EXTRACT_EVENT, JOB_PROTOCOL, UPLOAD_HOST } from "./container";
 import { phase, sentryOptions, step as traceStep, type PhaseStep } from "./telemetry";
 import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
 
@@ -36,7 +36,7 @@ const MAX_EXTRACT_WAITS = 3;
 const EMBED_BATCH = 50;
 
 const IO_STEP = { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
-/** Waits out "Maximum number of running container instances exceeded" while other videos finish. */
+/** Waits out "Maximum number of running container instances exceeded" while other videos finish, and a container rollout. */
 const START_STEP = { retries: { limit: 8, delay: "30 seconds", backoff: "linear" }, timeout: "5 minutes" } as const;
 const AI_STEP = { retries: { limit: 5, delay: "10 seconds", backoff: "exponential" }, timeout: "15 minutes" } as const;
 
@@ -158,6 +158,11 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       body: JSON.stringify({ videoId, instanceId, uploadBase: `http://${UPLOAD_HOST}`, token: this.env.INTERNAL_TOKEN }),
     });
     if (!res.ok) throw new Error(`container POST /jobs: ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const { protocol } = await res.json<{ protocol?: number }>();
+    if (protocol !== JOB_PROTOCOL) {
+      await destroyContainer(this.env, videoId);
+      throw new Error(`container speaks job protocol ${protocol ?? 1}, not ${JOB_PROTOCOL}: its image is from before a rollout`);
+    }
   }
 
   /**
@@ -186,11 +191,13 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
   private async extract(videoId: string, instanceId: string, step: PhaseStep): Promise<Manifest | "not_ready"> {
     await step.do("extract-start", START_STEP, () => this.startJob(videoId, instanceId));
     for (let i = 0; i < MAX_EXTRACT_WAITS; i++) {
+      // Step names must differ, but only a job that outlives its first wait needs a number.
+      const retry = i ? `-${i}` : "";
       let job: JobStatus;
       try {
-        job = (await step.waitForEvent<JobStatus>(`extract-done-${i}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })).payload;
+        job = (await step.waitForEvent<JobStatus>(`extract-done${retry}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })).payload;
       } catch {
-        job = await step.do(`extract-check-${i}`, IO_STEP, () => this.checkJob(videoId, instanceId));
+        job = await step.do(`extract-check${retry}`, START_STEP, () => this.checkJob(videoId, instanceId));
       }
       if (job.state === "running") continue;
       await step.do("extract-release", IO_STEP, () => destroyContainer(this.env, videoId));

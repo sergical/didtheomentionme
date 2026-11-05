@@ -2,6 +2,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -15,6 +16,8 @@ UPLOAD_THREADS = 16
 UPLOAD_ATTEMPTS = 5
 NOT_READY_STATES = {"is_live", "is_upcoming", "post_live"}
 ID_PATTERN = re.compile(r"^[\w-]{1,64}$")
+# Equal to JOB_PROTOCOL in src/container.ts. Bump both with each change to the /jobs contract.
+JOB_PROTOCOL = 2
 VIDEO_FORMAT = "bv*[height<=720][vcodec^=avc1]/bv*[height<=720]/b[height<=720]"
 AUDIO_SEGMENT_SECONDS = 600
 
@@ -263,9 +266,11 @@ def notify(upload_base, token, instance_id, status):
             with urllib.request.urlopen(req, timeout=60) as res:
                 res.read()
             return
-        except Exception:
+        except Exception as e:
             if attempt < UPLOAD_ATTEMPTS - 1:
                 time.sleep(2 ** attempt)
+            else:
+                print(f"notify {instance_id} failed: {e}", file=sys.stderr, flush=True)
 
 
 def process_job(video_id, upload_base, token, instance_id):
@@ -380,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"error": "videoId, uploadBase and token are required"})
             if instance_id and not ID_PATTERN.match(instance_id):
                 return self.send_json(400, {"error": "invalid instanceId"})
-            self.send_json(202, start_job(video_id, upload_base, token, instance_id))
+            self.send_json(202, {**start_job(video_id, upload_base, token, instance_id), "protocol": JOB_PROTOCOL})
         else:
             self.send_json(404, {"error": "not found"})
 

@@ -11,6 +11,11 @@ const UPLOAD_PREFIX = "/internal/r2/";
 const EVENTS_PREFIX = "/internal/events/";
 /** The container sends this event to the workflow instance when its job is done or failed. */
 export const EXTRACT_EVENT = "extract-done";
+/**
+ * The /jobs contract version, equal to `JOB_PROTOCOL` in container/server.py. A rollout replaces containers over
+ * minutes, so a job can start on the image before it.
+ */
+export const JOB_PROTOCOL = 2;
 
 async function putObject(request: Request, env: Env): Promise<Response> {
   if (request.method !== "PUT") return new Response("method not allowed", { status: 405 });

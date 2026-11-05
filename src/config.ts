@@ -24,6 +24,8 @@ export interface Detector {
   frameState: string;
   frameQuestion: string;
   frameThreshold: number;
+  chatQuestion: string;
+  chatThreshold: number;
   readerPrompt: string;
   readAloudQuestion(post: Post): string;
   readAloudThreshold: number;
@@ -63,6 +65,9 @@ export const DETECTORS: Detector[] = [
       "Is a post from X (Twitter) clearly visible and readable as main content of the screen (a post page, timeline, search results, embed or screenshot)? An X post shows an avatar, a display name, an @handle and the post text. Small sidebar items and avatars do not count. A live chat, a stream dashboard, an activity feed, or a YouTube page with no X post in its video does not count.",
     /** Real posts scored 0.82 or more on 61 sampled frames and in all 15 labelled intervals. Stream chat scored up to 0.61. */
     frameThreshold: 0.75,
+    chatQuestion: "Is the main content of this frame a live stream chat panel (Twitch or YouTube chat) with many short messages from viewers?",
+    /** On 41 frames with 8 or more reader lines, a wall of real posts scored 0.06, a post page beside a chat 0.17, and the other 39 scored 0.80 or more. */
+    chatThreshold: 0.5,
     readerPrompt:
       "This is a frame from a screen recording. Transcribe every X (Twitter) post visible on screen, including replies and quoted posts. Live stream chat is not X. " +
       "Output one line per post: @handle | display name | post text. Copy characters exactly; write ? for anything unreadable. Output nothing else.",

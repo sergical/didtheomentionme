@@ -1,7 +1,7 @@
 import { captureException, captureMessage, getActiveSpan, instrumentWorkflowWithSentry, logger, metrics } from "@sentry/cloudflare";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import { detectFrame, embed, findQuoteSpan, pool, readAloudProbability, readFrame, transcribe } from "./ai";
+import { detectFrame, embed, findQuoteSpan, pool, readAloudProbability, readPosts, transcribe } from "./ai";
 import { MIN_DURATION_SECONDS, getDetector, getSource, type Detector } from "./config";
 import type { Env, VideoParams } from "./env";
 import {
@@ -12,7 +12,6 @@ import {
   expandSentence,
   findRuns,
   groupPosts,
-  parseReaderLines,
   pickSeconds,
   timeAtOffset,
   type Observation,
@@ -293,8 +292,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     await pool(pickSeconds(run), READ_CONCURRENCY, async (second) => {
       const frame = await env.BUCKET.get(key(videoId, `f1280/${timeline[second]}.jpg`));
       if (!frame) throw new Error(`missing reader frame ${timeline[second]}`);
-      const output = await readFrame(env, detector, await frame.arrayBuffer(), { videoId, second: timeline[second], size: "f1280" });
-      for (const line of parseReaderLines(output)) observations.push({ second, line });
+      const lines = await readPosts(env, detector, await frame.arrayBuffer(), { videoId, second: timeline[second], size: "f1280" });
+      for (const line of lines) observations.push({ second, line });
     });
     return groupPosts(observations).map((post) => ({ ...post, frameSecond: timeline[post.frameSecond] }));
   }

@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
-import { embed, embedRequests, hedge, retryDelayMs } from "../src/ai";
+import { describe, expect, test } from "bun:test";
+import { embed, embedRequests, hedge, readPosts, retryDelayMs, runModel } from "../src/ai";
+import { DETECTORS } from "../src/config";
 import type { Env } from "../src/env";
 
 test("a long post that would pad a request past the limit starts a new one", () => {
@@ -90,4 +91,51 @@ test("the per-minute rate limit waits longer than a server error", () => {
 test("a bad request is not retried", () => {
   expect(retryDelayMs(new Error("AiError: 5006: invalid input"), 0)).toBeNull();
   expect(retryDelayMs(Object.assign(new Error("x"), { status: 400 }), 0)).toBeNull();
+});
+
+test("a settled hedge tells the call that lost to stop retrying", async () => {
+  let loser = () => false;
+  let calls = 0;
+  await hedge("model", 5, (abandoned) => {
+    if (++calls === 1) {
+      loser = abandoned;
+      return after(100, "stuck");
+    }
+    return after(1, "fresh");
+  });
+  expect(loser()).toBe(true);
+});
+
+test("an abandoned model call is not sent again", async () => {
+  let calls = 0;
+  const env = { AI: { run: async () => (calls++, Promise.reject(new Error("error 3021"))) } } as unknown as Env;
+  await expect(runModel(env, "model", {}, 3, () => true)).rejects.toThrow("3021");
+  expect(calls).toBe(1);
+});
+
+describe("reading a frame", () => {
+  const jpeg = new ArrayBuffer(1);
+  const frame = { videoId: "v", second: 1, size: "f1280" } as const;
+  const read = (count: number, chat: number) => {
+    let asked = 0;
+    const content = Array.from({ length: count }, (_, i) => `@user${i} | User | message ${i}`).join("\n");
+    const env = {
+      AI: { run: async (model: string) => (model.includes("flash") ? (asked++, { answers: { frame: { noul: chat } } }) : { choices: [{ message: { content } }] }) },
+    } as unknown as Env;
+    return { lines: readPosts(env, DETECTORS[0], jpeg, frame), asked: () => asked };
+  };
+
+  test("a frame with few lines is not checked for chat", async () => {
+    const result = read(7, 0.9);
+    expect(await result.lines).toHaveLength(7);
+    expect(result.asked()).toBe(0);
+  });
+
+  test("a frame with many lines that shows a chat has no posts", async () => {
+    expect(await read(8, 0.9).lines).toEqual([]);
+  });
+
+  test("a frame with many lines that shows no chat keeps its posts", async () => {
+    expect(await read(9, 0.06).lines).toHaveLength(9);
+  });
 });

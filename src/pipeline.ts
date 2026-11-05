@@ -37,8 +37,8 @@ export const UNKNOWN_HANDLE = "@unknown";
 const PLACEHOLDER_HANDLES = new Set(["@handle", "@unknown", "@username", "@user"]);
 const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown"]);
 
-/** 11 of 12 sampled frames with 8 or more lines were stream chat, which the reader lists despite its prompt. */
-const MAX_POSTS_IN_FRAME = 7;
+/** 11 of 12 sampled frames with 8 or more lines were stream chat. The other was a wall of real posts. */
+export const MAX_POSTS_WITHOUT_CHAT_CHECK = 7;
 
 /** Parses the reader model output, one `@handle | display name | text` per line. Drops malformed lines. */
 export function parseReaderLines(output: string): ReaderLine[] {
@@ -56,7 +56,7 @@ export function parseReaderLines(output: string): ReaderLine[] {
       text,
     });
   }
-  return lines.length > MAX_POSTS_IN_FRAME ? [] : lines;
+  return lines;
 }
 
 export const tokenize = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];

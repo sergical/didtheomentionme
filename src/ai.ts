@@ -1,7 +1,7 @@
 import { logger, metrics } from "@sentry/cloudflare";
 import type { Detector, Post } from "./config";
 import type { Env } from "./env";
-import { wordsFromSegments, type Word } from "./pipeline";
+import { MAX_POSTS_WITHOUT_CHAT_CHECK, parseReaderLines, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
 import { chatSpan, transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
 
 // The AI binding types in workers-types do not list these models.
@@ -30,17 +30,18 @@ export function retryDelayMs(err: unknown, attempt: number): number | null {
   return (rateLimited ? 10_000 : 1000) * 2 ** attempt + Math.random() * 500;
 }
 
-export async function runModel(env: Env, model: string, inputs: unknown, attempts = 3): Promise<any> {
+export async function runModel(env: Env, model: string, inputs: unknown, attempts = 3, abandoned = () => false): Promise<any> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await (env.AI as unknown as AnyRun).run(model, inputs);
     } catch (err) {
       const delay = retryDelayMs(err, attempt);
-      if (attempt >= attempts - 1 || delay === null) throw err;
+      if (attempt >= attempts - 1 || delay === null || abandoned()) throw err;
       const error = String((err as Error)?.message ?? err).slice(0, 300);
       logger.warn(logger.fmt`${model} failed, retry ${attempt + 1} of ${attempts - 1}`, { "gen_ai.request.model": model, error });
       metrics.count("ai.retry", 1, { attributes: { "gen_ai.request.model": model } });
       await sleep(delay);
+      if (abandoned()) throw err;
     }
   }
 }
@@ -50,17 +51,19 @@ export async function runModel(env: Env, model: string, inputs: unknown, attempt
  * sometimes holds one gemma call for over a minute, while the same frame answers in seconds when sent again.
  * It fails when the second call fails, or when neither answers in 4 × `delayMs`, so the step can retry.
  */
-export function hedge<T>(model: string, delayMs: number, call: () => Promise<T>): Promise<T> {
+export function hedge<T>(model: string, delayMs: number, call: (abandoned: () => boolean) => Promise<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     let running = 0;
+    let settled = false;
     const timers: ReturnType<typeof setTimeout>[] = [];
     const settle = <A>(fn: (value: A) => void) => (value: A) => {
+      settled = true;
       timers.forEach(clearTimeout);
       fn(value);
     };
     const start = (second: boolean) => {
       running++;
-      call().then(settle(resolve), (err) => {
+      call(() => settled).then(settle(resolve), (err) => {
         if (--running === 0 || second) settle(reject)(err);
       });
     };
@@ -93,21 +96,25 @@ export function toBase64(bytes: ArrayBuffer): string {
   return btoa(binary);
 }
 
-/** Probability that an X post (or whatever the detector looks for) is on screen. */
-export async function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
+async function askAboutFrame(env: Env, state: string, question: string, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
   const result = await withFrameReference(frame, () => runModel(env, FLASH, {
     model: "clef-flash",
-    state: detector.frameState,
+    state,
     images: [{ content_type: "image/jpeg", base64: toBase64(jpeg) }],
-    questions: { frame: { type: "noul", instructions: detector.frameQuestion } },
+    questions: { frame: { type: "noul", instructions: question } },
   }));
   const p = result?.answers?.frame?.noul;
   if (typeof p !== "number") throw new Error(`clef-flash returned no answer: ${JSON.stringify(result).slice(0, 200)}`);
   return p;
 }
 
+/** Probability that an X post (or whatever the detector looks for) is on screen. */
+export function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
+  return askAboutFrame(env, detector.frameState, detector.frameQuestion, jpeg, frame);
+}
+
 /** Raw reader output: one `@handle | display name | text` line per post. */
-export async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
+async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
   const inputs = {
     max_tokens: 1500,
     chat_template_kwargs: { enable_thinking: false },
@@ -122,11 +129,19 @@ export async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer,
     ],
   };
   const result = await withFrameReference(frame, () =>
-    chatSpan(GEMMA, inputs, () => hedge(GEMMA, READ_HEDGE_MS, () => runModel(env, GEMMA, inputs))),
+    chatSpan(GEMMA, inputs, () => hedge(GEMMA, READ_HEDGE_MS, (abandoned) => runModel(env, GEMMA, inputs, 3, abandoned))),
   );
   const text = result?.choices?.[0]?.message?.content ?? result?.response;
   if (typeof text !== "string") throw new Error(`gemma-4 returned no text: ${JSON.stringify(result).slice(0, 200)}`);
   return text;
+}
+
+/** The reader lists stream chat despite its prompt, so a frame with many lines is checked before they count as posts. */
+export async function readPosts(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<ReaderLine[]> {
+  const lines = parseReaderLines(await readFrame(env, detector, jpeg, frame));
+  if (lines.length <= MAX_POSTS_WITHOUT_CHAT_CHECK) return lines;
+  const chat = await askAboutFrame(env, detector.frameState, detector.chatQuestion, jpeg, frame);
+  return chat < detector.chatThreshold ? lines : [];
 }
 
 export async function readAloudProbability(env: Env, detector: Detector, post: Post, transcript: string): Promise<number> {

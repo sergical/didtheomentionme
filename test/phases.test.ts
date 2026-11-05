@@ -37,8 +37,8 @@ function capture() {
 }
 
 /**
- * Runs finished steps from the cache, like the Workflows engine on replay. It suspends at a sleep that has not
- * passed, and once before each step in `evictAt`, like a Worker evicted between two steps.
+ * Runs finished steps from the cache, like the Workflows engine on replay. It suspends at an event that has not
+ * come, and once before each step in `evictAt`, like a Worker evicted between two steps.
  */
 function engine(evictAt: string[] = []) {
   const cache = new Map<string, unknown>();
@@ -49,19 +49,19 @@ function engine(evictAt: string[] = []) {
       if (!cache.has(name)) cache.set(name, await callback({ attempt: 1, config, step: { name, count: 1 } }));
       return cache.get(name);
     },
-    sleep: (name: string) => (cache.has(name) ? Promise.resolve() : (cache.set(name, true), new Promise<void>(() => {}))),
+    waitForEvent: (name: string) => (cache.has(name) ? Promise.resolve() : (cache.set(name, true), new Promise<void>(() => {}))),
   };
 }
 
-test("workflow steps nest under one phase span each, sent once, across restarts at a sleep and after a phase's last step", async () => {
+test("workflow steps nest under one phase span each, sent once, across restarts at an event wait and after a phase's last step", async () => {
   const { sent, options, named, attribute } = capture();
   const config = { retries: { limit: 1, delay: "1 second", backoff: "constant" } } as const;
   class Fixture {
     async run(_event: unknown, step: PhaseStep) {
       await phase("extract", step, async (step) => {
         await step.do("extract-start", config, async () => 0);
-        await step.sleep("extract-wait", "1 second");
-        await step.do("extract-poll", config, async () => 1);
+        await step.waitForEvent("extract-done", { type: "extract-done" });
+        await step.do("extract-check", config, async () => 1);
       });
       await phase("transcribe", step, async (step) => {
         await step.do("transcribe-0", config, async () => 1);
@@ -87,7 +87,7 @@ test("workflow steps nest under one phase span each, sent once, across restarts 
   const phases = sent.filter((span) => attribute(span, "sentry.op") === "workflow.phase");
   expect(phases.map((span) => span.name)).toEqual(["extract", "transcribe", "store"]);
   const [extract, transcribe, store] = phases;
-  for (const [parent, names] of [[extract, ["extract-start", "extract-poll"]], [transcribe, ["transcribe-0", "transcribe-1"]]] as const) {
+  for (const [parent, names] of [[extract, ["extract-start", "extract-check"]], [transcribe, ["transcribe-0", "transcribe-1"]]] as const) {
     for (const name of names) {
       expect(named(name)).toHaveLength(1);
       expect(named(name)[0]).toMatchObject({ parent_span_id: parent.span_id, is_segment: true });

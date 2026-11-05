@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/cloudflare";
 import { SentrySpan } from "@sentry/core";
-import type { WorkflowSleepDuration, WorkflowStepConfig, WorkflowStepContext } from "cloudflare:workers";
+import type { WorkflowStepConfig, WorkflowStepContext, WorkflowStepEvent, WorkflowTimeoutDuration } from "cloudflare:workers";
 import type { Env } from "./env";
 
 const KB = (base64Length: number) => Math.round((base64Length * 3) / 4 / 1024);
@@ -73,13 +73,14 @@ export const step = <T>(name: string, fn: () => Promise<T>, attributes?: Record<
 /** The steps inside a phase. Each one passes a config, so `do` needs only that overload. */
 export type PhaseStep = {
   do<T extends Rpc.Serializable<T>>(name: string, config: WorkflowStepConfig, callback: (ctx: WorkflowStepContext) => Promise<T>): Promise<T>;
-  sleep(name: string, duration: WorkflowSleepDuration): Promise<void>;
+  waitForEvent<T extends Rpc.Serializable<T>>(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }): Promise<WorkflowStepEvent<T>>;
 };
 
 /**
  * Groups Workflow steps under one span. Each step stays its own segment, so its name still names the spans in it,
- * and points to the phase as its parent. The Worker can restart inside a phase, for example at a sleep, so a first
- * step keeps the phase's span id and start time for every restart, and a last step sends the phase span once.
+ * and points to the phase as its parent. The Worker can restart inside a phase, for example while it waits for an
+ * event, so a first step keeps the phase's span id and start time for every restart, and a last step sends the phase
+ * span once.
  */
 export async function phase<T>(
   name: string,

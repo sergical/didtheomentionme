@@ -20,7 +20,7 @@ import {
   type Run,
   type Word,
 } from "./pipeline";
-import { UPLOAD_HOST } from "./container";
+import { EXTRACT_EVENT, UPLOAD_HOST } from "./container";
 import { phase, sentryOptions, step as traceStep, type PhaseStep } from "./telemetry";
 import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
 
@@ -31,8 +31,8 @@ const READ_ALOUD_CONCURRENCY = 4;
 const READ_ALOUD_SLICES = 3;
 const WINDOW_PADDING_SECONDS = 30;
 const AUDIO_CHUNK_SECONDS = 600;
-const POLL_INTERVAL = "30 seconds";
-const MAX_POLLS = 180; // 90 minutes
+const EXTRACT_WAIT = "30 minutes";
+const MAX_EXTRACT_WAITS = 3;
 const EMBED_BATCH = 50;
 
 const IO_STEP = { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
@@ -48,10 +48,11 @@ type Manifest = {
   frames: number;
   keptSeconds?: number[];
   hasCaptions: boolean;
+  captionsError?: string | null;
   audioChunks: number | string[];
 };
 
-type JobPoll = {
+type JobStatus = {
   state: "running" | "done" | "error";
   stage: string | null;
   uploaded?: number;
@@ -67,11 +68,6 @@ type Mention = PostGroup & {
   quote: string | null;
 };
 
-/** YouTube asks some downloads to sign in while others from the same app pass, so a later attempt can work. */
-const BOT_CHECK = /confirm you.re not a bot/i;
-
-type NotReady = "not_ready" | "bot_check";
-
 const key = (videoId: string, path: string) => `videos/${videoId}/${path}`;
 const transcriptKey = (videoId: string) => `transcripts/${videoId}.json`;
 
@@ -85,8 +81,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         await startRun(env, videoId, instanceId);
         await setStatus(env, videoId, "processing");
       });
-      const outcome = await this.process(videoId, source, step);
-      const pending = outcome === "not_ready" || outcome === "bot_check";
+      const outcome = await this.process(videoId, source, instanceId, step);
+      const pending = outcome === "not_ready";
       await step.do("mark-final", IO_STEP, async () => {
         // endRun writes once, so it goes last: a failed status write must leave the run open for mark-error.
         await setStatus(env, videoId, pending ? "pending" : outcome, pending ? "not ready yet, will retry" : null);
@@ -109,13 +105,13 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     }
   }
 
-  private async process(videoId: string, sourceId: string, step: WorkflowStep): Promise<"done" | "skipped" | NotReady> {
+  private async process(videoId: string, sourceId: string, instanceId: string, step: WorkflowStep): Promise<"done" | "skipped" | "not_ready"> {
     const env = this.env;
     const config = getSource(sourceId);
     if (!config) throw new NonRetryableError(`unknown source ${sourceId}`);
     const detectors = config.detectors.map(getDetector);
 
-    const manifest = await phase("extract", step, (step) => this.extract(videoId, step));
+    const manifest = await phase("extract", step, (step) => this.extract(videoId, instanceId, step));
     if (typeof manifest === "string") return manifest;
 
     const isShort = manifest.duration != null && manifest.duration < MIN_DURATION_SECONDS;
@@ -155,47 +151,51 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     return isShort ? "skipped" : "done";
   }
 
-  private async startJob(videoId: string): Promise<void> {
+  private async startJob(videoId: string, instanceId: string): Promise<void> {
     const res = await containerFetch(this.env, videoId, "/jobs", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ videoId, uploadBase: `http://${UPLOAD_HOST}`, token: this.env.INTERNAL_TOKEN }),
+      body: JSON.stringify({ videoId, instanceId, uploadBase: `http://${UPLOAD_HOST}`, token: this.env.INTERNAL_TOKEN }),
     });
     if (!res.ok) throw new Error(`container POST /jobs: ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
 
-  private async pollJob(videoId: string): Promise<JobPoll> {
+  /**
+   * The job status when its event did not come. A container that lost its job may have finished it first: then
+   * the manifest is in R2, because the job writes it last. Otherwise the job starts again.
+   */
+  private async checkJob(videoId: string, instanceId: string): Promise<JobStatus> {
     const res = await containerFetch(this.env, videoId, `/jobs/${videoId}`);
     if (res.status === 404) {
-      await this.startJob(videoId);
+      const manifest = await (await this.env.BUCKET.get(key(videoId, "manifest.json")))?.json<Manifest>();
+      if (manifest) return { state: "done", stage: "done", error: null, manifest };
+      await this.startJob(videoId, instanceId);
       return { state: "running", stage: null, error: null, manifest: null };
     }
     if (!res.ok) throw new Error(`container GET /jobs: ${res.status}`);
-    const job = (await res.json()) as Partial<JobPoll>;
-    const state = job.state ?? "running";
+    const job = (await res.json()) as JobStatus;
     getActiveSpan()?.setAttributes({
-      "container.state": state,
+      "container.state": job.state,
       "container.stage": job.stage ?? "",
       "container.uploaded": job.uploaded ?? 0,
       "container.upload_total": job.total ?? 0,
     });
-    let manifest = job.manifest ?? null;
-    if (state === "done" && !manifest) {
-      manifest = await (await this.env.BUCKET.get(key(videoId, "manifest.json")))?.json<Manifest>() ?? null;
-    }
-    return { state, stage: job.stage ?? null, uploaded: job.uploaded, total: job.total, error: job.error ?? null, manifest };
+    return job;
   }
 
-  private async extract(videoId: string, step: PhaseStep): Promise<Manifest | NotReady> {
-    await step.do("extract-start", START_STEP, () => this.startJob(videoId));
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await step.sleep(`extract-wait-${i}`, POLL_INTERVAL);
-      const job = await step.do(`extract-poll-${i}`, IO_STEP, () => this.pollJob(videoId));
+  private async extract(videoId: string, instanceId: string, step: PhaseStep): Promise<Manifest | "not_ready"> {
+    await step.do("extract-start", START_STEP, () => this.startJob(videoId, instanceId));
+    for (let i = 0; i < MAX_EXTRACT_WAITS; i++) {
+      let job: JobStatus;
+      try {
+        job = (await step.waitForEvent<JobStatus>(`extract-done-${i}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })).payload;
+      } catch {
+        job = await step.do(`extract-check-${i}`, IO_STEP, () => this.checkJob(videoId, instanceId));
+      }
       if (job.state === "running") continue;
       await step.do("extract-release", IO_STEP, () => destroyContainer(this.env, videoId));
       if (job.state === "error") {
         if (job.error === "not_ready") return "not_ready";
-        if (BOT_CHECK.test(job.error ?? "")) return "bot_check";
         throw new NonRetryableError(`extract failed at ${job.stage}: ${job.error}`);
       }
       const { manifest } = job;
@@ -209,9 +209,11 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
           .run();
         logger.info(logger.fmt`Extracted ${manifest.frames} frames from ${manifest.duration ?? "?"} s of video, captions: ${manifest.hasCaptions}`, {
           "video.id": videoId,
-          "extract.polls": i + 1,
+          "extract.waits": i + 1,
         });
-        metrics.distribution("extract.polls", i + 1);
+        if (manifest.captionsError) {
+          logger.warn(logger.fmt`No captions for ${videoId}, using whisper: ${manifest.captionsError}`, { "video.id": videoId });
+        }
         if (manifest.duration != null) metrics.distribution("video.duration", manifest.duration, { unit: "second" });
       });
       return manifest;

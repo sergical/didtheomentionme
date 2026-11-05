@@ -184,17 +184,18 @@ def fetch_metadata(video_id):
 
 
 def extract_words(video_id, tmp):
-    """Download English auto-captions and parse them. Returns [] when there are none."""
-    run([
+    """Download English auto-captions and parse them. Returns (words, why there are none)."""
+    code, _, stderr = run([
         "yt-dlp", "--skip-download", "--write-auto-subs", "--sub-langs", "en", "--sub-format", "vtt",
         "--no-playlist", "-o", str(tmp / "subs.%(ext)s"), f"https://www.youtube.com/watch?v={video_id}",
     ], timeout=300)
-    words = []
     for vtt in tmp.glob("subs*.vtt"):
         words = parse_vtt(vtt.read_text(encoding="utf-8"))
         if words:
-            break
-    return words
+            return words, None
+    if code != 0:
+        return [], f"yt-dlp exit {code}: {stderr.strip()[-500:]}"
+    return [], "no English auto-captions"
 
 
 def extract_audio_chunks(video_id, tmp, uploader):
@@ -248,7 +249,26 @@ def extract_frames(video_id, tmp, uploader):
     return len(frames), frames
 
 
-def process_job(video_id, upload_base, token):
+def notify(upload_base, token, instance_id, status):
+    """Sends the final job status to the workflow. If every attempt fails, the workflow checks the job itself."""
+    body = json.dumps(status).encode()
+    for attempt in range(UPLOAD_ATTEMPTS):
+        try:
+            req = urllib.request.Request(
+                f"{upload_base.rstrip('/')}/internal/events/{instance_id}",
+                data=body,
+                method="POST",
+                headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as res:
+                res.read()
+            return
+        except Exception:
+            if attempt < UPLOAD_ATTEMPTS - 1:
+                time.sleep(2 ** attempt)
+
+
+def process_job(video_id, upload_base, token, instance_id):
     tmp = Path(tempfile.mkdtemp(prefix=f"job-{video_id}-"))
     uploader = Uploader(video_id, upload_base, token)
     try:
@@ -256,7 +276,7 @@ def process_job(video_id, upload_base, token):
         meta = fetch_metadata(video_id)
 
         update_job(video_id, stage="captions")
-        words = extract_words(video_id, tmp)
+        words, captions_error = extract_words(video_id, tmp)
         audio_chunks = 0
         if words:
             payload = json.dumps([[round(t, 2), w] for t, w in words], separators=(",", ":"))
@@ -278,6 +298,7 @@ def process_job(video_id, upload_base, token):
             "frames": frames,
             "keptSeconds": kept_seconds,
             "hasCaptions": bool(words),
+            "captionsError": captions_error,
             "audioChunks": audio_chunks,
         }
         uploader.submit(f"videos/{video_id}/manifest.json", "application/json", data=json.dumps(manifest).encode())
@@ -288,9 +309,11 @@ def process_job(video_id, upload_base, token):
     finally:
         uploader.close()
         shutil.rmtree(tmp, ignore_errors=True)
+    if instance_id:
+        notify(upload_base, token, instance_id, job_status(video_id))
 
 
-def start_job(video_id, upload_base, token):
+def start_job(video_id, upload_base, token, instance_id):
     """Returns the job status; starts a thread unless a job is running or done."""
     with LOCK:
         job = JOBS.get(video_id)
@@ -299,7 +322,7 @@ def start_job(video_id, upload_base, token):
                 "state": "running", "stage": "metadata", "uploaded": 0, "total": 0,
                 "error": None, "manifest": None,
             }
-            threading.Thread(target=process_job, args=(video_id, upload_base, token), daemon=True).start()
+            threading.Thread(target=process_job, args=(video_id, upload_base, token, instance_id), daemon=True).start()
     return job_status(video_id)
 
 
@@ -322,6 +345,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             _, stdout, _ = run(["yt-dlp", "--version"], timeout=30)
             self.send_json(200, {"ytdlp": stdout.strip()})
+        elif self.path == "/busy":
+            with LOCK:
+                busy = any(job["state"] == "running" for job in JOBS.values())
+            self.send_json(200, {"busy": busy})
         elif self.path.startswith("/jobs/"):
             status = job_status(self.path[len("/jobs/"):])
             if status is None:
@@ -346,10 +373,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json(502, {"error": str(e)})
         elif self.path == "/jobs":
-            video_id, upload_base, token = (str(body.get(k, "")) for k in ("videoId", "uploadBase", "token"))
+            video_id, upload_base, token, instance_id = (
+                str(body.get(k, "")) for k in ("videoId", "uploadBase", "token", "instanceId")
+            )
             if not ID_PATTERN.match(video_id) or not upload_base or not token:
                 return self.send_json(400, {"error": "videoId, uploadBase and token are required"})
-            self.send_json(202, start_job(video_id, upload_base, token))
+            if instance_id and not ID_PATTERN.match(instance_id):
+                return self.send_json(400, {"error": "invalid instanceId"})
+            self.send_json(202, start_job(video_id, upload_base, token, instance_id))
         else:
             self.send_json(404, {"error": "not found"})
 

@@ -21,8 +21,8 @@ function isRetryable(err: unknown): boolean {
   return /\b(429|5\d\d)\b|capacity|overloaded|timed? ?out|temporar|internal/i.test(String((err as Error)?.message ?? err));
 }
 
-/** Calls a model, retrying 429 and 5xx with exponential backoff. */
-export async function runModel(env: Env, model: string, inputs: unknown, attempts = 5): Promise<any> {
+/** Calls a model, retrying 429 and 5xx with exponential backoff. The workflow step retries the rest. */
+export async function runModel(env: Env, model: string, inputs: unknown, attempts = 3): Promise<any> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await (env.AI as unknown as AnyRun).run(model, inputs);

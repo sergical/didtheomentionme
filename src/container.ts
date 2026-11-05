@@ -8,6 +8,9 @@ import type { Env } from "./env";
  */
 export const UPLOAD_HOST = "r2.internal";
 const UPLOAD_PREFIX = "/internal/r2/";
+const EVENTS_PREFIX = "/internal/events/";
+/** The container sends this event to the workflow instance when its job is done or failed. */
+export const EXTRACT_EVENT = "extract-done";
 
 async function putObject(request: Request, env: Env): Promise<Response> {
   if (request.method !== "PUT") return new Response("method not allowed", { status: 405 });
@@ -23,6 +26,18 @@ async function putObject(request: Request, env: Env): Promise<Response> {
   return new Response(null, { status: 204 });
 }
 
+async function sendJobEvent(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+  if (!(await authorized(request, env))) return new Response("unauthorized", { status: 401 });
+  const instanceId = decodeURIComponent(new URL(request.url).pathname.slice(EVENTS_PREFIX.length));
+  const instance = await env.VIDEO_WORKFLOW.get(instanceId);
+  await instance.sendEvent({ type: EXTRACT_EVENT, payload: await request.json() });
+  return new Response(null, { status: 204 });
+}
+
+const route = (request: Request, env: Env) =>
+  new URL(request.url).pathname.startsWith(EVENTS_PREFIX) ? sendJobEvent(request, env) : putObject(request, env);
+
 export class MediaContainer extends Container<Env> {
   defaultPort = 8080;
   sleepAfter = "10m";
@@ -30,7 +45,14 @@ export class MediaContainer extends Container<Env> {
     // Assign instead of declaring a static field: the base class's setter must run, because
     // ContainerProxy looks handlers up in the registry that the setter fills.
     this.outboundByHost = {
-      [UPLOAD_HOST]: (request: Request, env: unknown) => putObject(request, env as Env),
+      [UPLOAD_HOST]: (request: Request, env: unknown) => route(request, env as Env),
     };
+  }
+
+  // Only requests to the container count as activity, and nothing calls it while a job runs.
+  override async onActivityExpired(): Promise<void> {
+    const res = await this.containerFetch("http://container/busy").catch(() => null);
+    if (res?.ok && (await res.json<{ busy: boolean }>()).busy) return this.renewActivityTimeout();
+    await super.onActivityExpired();
   }
 }

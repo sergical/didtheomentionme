@@ -46,7 +46,7 @@ export function parseReaderLines(output: string): ReaderLine[] {
     const handle = parts[0].trim();
     const displayName = parts[1].trim();
     const text = parts.slice(2).join("|").trim();
-    if (!HANDLE.test(handle) || text.length < 3) continue;
+    if (!HANDLE.test(handle) || text.length < 3 || tokenize(text).length === 0) continue;
     lines.push({
       handle: PLACEHOLDER_HANDLES.has(handle.toLowerCase()) ? UNKNOWN_HANDLE : handle,
       displayName: PLACEHOLDER_NAMES.has(displayName.toLowerCase()) ? "" : displayName,

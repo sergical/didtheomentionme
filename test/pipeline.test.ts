@@ -59,6 +59,10 @@ describe("pickSeconds", () => {
 });
 
 describe("parseReaderLines", () => {
+  test("a line with only question marks has no post text", () => {
+    expect(parseReaderLines("@patloeber | Patrick | ? ? ? ?")).toEqual([]);
+  });
+
   test("keeps a valid line", () => {
     expect(parseReaderLines("@ThePrimeagen | ThePrimeagen | tested out Haiku vs Luna")).toEqual([
       { handle: "@ThePrimeagen", displayName: "ThePrimeagen", text: "tested out Haiku vs Luna" },

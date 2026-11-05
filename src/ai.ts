@@ -187,14 +187,24 @@ export function embedRequests(texts: string[]): string[][] {
   return requests;
 }
 
+/** Error 8007 means the request was over the token limit, because other scripts and repeated symbols beat the estimate. */
+async function embedRequest(env: Env, request: string[]): Promise<number[][]> {
+  let result;
+  try {
+    result = await withEstimatedInputTokens(request, () => runModel(env, EMBED, { text: request }));
+  } catch (err) {
+    if (request.length === 1 || !/\b8007\b/.test(String((err as Error)?.message ?? err))) throw err;
+    const half = request.length >> 1;
+    return [...(await embedRequest(env, request.slice(0, half))), ...(await embedRequest(env, request.slice(half)))];
+  }
+  if (!Array.isArray(result?.data) || result.data.length !== request.length) {
+    throw new Error(`bge-m3 returned ${result?.data?.length} vectors for ${request.length} texts`);
+  }
+  return result.data;
+}
+
 export async function embed(env: Env, texts: string[]): Promise<number[][]> {
   const vectors: number[][] = [];
-  for (const request of embedRequests(texts)) {
-    const result = await withEstimatedInputTokens(request, () => runModel(env, EMBED, { text: request }));
-    if (!Array.isArray(result?.data) || result.data.length !== request.length) {
-      throw new Error(`bge-m3 returned ${result?.data?.length} vectors for ${request.length} texts`);
-    }
-    vectors.push(...result.data);
-  }
+  for (const request of embedRequests(texts)) vectors.push(...(await embedRequest(env, request)));
   return vectors;
 }

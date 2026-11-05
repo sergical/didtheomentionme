@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { embedRequests, hedge, retryDelayMs } from "../src/ai";
+import { embed, embedRequests, hedge, retryDelayMs } from "../src/ai";
+import type { Env } from "../src/env";
 
 test("a long post that would pad a request past the limit starts a new one", () => {
   const short = "theo: short post";
@@ -14,6 +15,35 @@ test("a long post that would pad a request past the limit starts a new one", () 
 
 test("short posts share one embed request", () => {
   expect(embedRequests(Array(50).fill("theo: short post"))).toHaveLength(1);
+});
+
+test("a request over the token limit is split, and the vectors keep the order of the texts", async () => {
+  const sizes: number[] = [];
+  const env = {
+    AI: {
+      run: async (_model: string, { text }: { text: string[] }) => {
+        sizes.push(text.length);
+        if (text.length > 2) throw new Error("8007: Max context reached 68424 tokens but model supports only 60000");
+        return { data: text.map((t) => [Number(t)]) };
+      },
+    },
+  } as unknown as Env;
+  expect(await embed(env, ["1", "2", "3", "4", "5"])).toEqual([[1], [2], [3], [4], [5]]);
+  expect(sizes).toEqual([5, 2, 3, 1, 2]);
+});
+
+test("an embed error that is not the token limit is not split", async () => {
+  let calls = 0;
+  const env = {
+    AI: {
+      run: async () => {
+        calls++;
+        throw new Error("4007: bad input");
+      },
+    },
+  } as unknown as Env;
+  await expect(embed(env, ["1", "2"])).rejects.toThrow("4007");
+  expect(calls).toBe(1);
 });
 
 const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));

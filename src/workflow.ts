@@ -25,10 +25,10 @@ import { phase, sentryOptions, step as traceStep, waitForEvent, type PhaseStep }
 import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun, watchContainerJob } from "./videos";
 
 const DETECT_BATCH = 120;
-const DETECT_CONCURRENCY = 12;
+const DETECT_CONCURRENCY = 10;
 /**
- * Workers AI stops clef-flash at about 1,500 calls a minute (error 3021). 2 steps of 12 calls send about 1,300, and
- * 3 steps reached the limit.
+ * Workers AI stops clef-flash at about 1,500 calls a minute (error 3021). 2 steps of 10 calls send about 1,330, while
+ * 2 steps of 12 sent about 1,600 and reached the limit.
  */
 const DETECT_STEPS = 2;
 const READ_CONCURRENCY = 6;

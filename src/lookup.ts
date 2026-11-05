@@ -2,7 +2,7 @@ import { logger, metrics } from "@sentry/cloudflare";
 import { embed } from "./ai";
 import { getSource } from "./config";
 import type { Env } from "./env";
-import { overlap, sameHandle, tokenize } from "./pipeline";
+import { overlap, sameHandle, samePost, tokenize } from "./pipeline";
 import { step } from "./telemetry";
 import { fetchTweet, parseTweetId, type TweetInfo } from "./tweet";
 
@@ -57,7 +57,6 @@ const VECTOR_TOP_K = 50;
 const FTS_WORDS = 12;
 const FTS_MIN_OVERLAP = 0.5;
 const MIN_QUERY_WORDS = 2;
-const SAME_POST_CONTAINMENT = 0.8;
 // Below this share of quote words in the post, a quote is a lead-in or a comment, such as "Back to what Zig said here."
 const READ_MIN_OVERLAP = 0.4;
 const READ_ALL_COVERAGE = 0.6;
@@ -152,12 +151,6 @@ export function mergeRepeats(matches: Match[]): Match[] {
     if (m.text.length > same.text.length) same.text = m.text;
   }
   return merged;
-}
-
-/** One reading can be a slice of the other, so this compares the shorter text's words against the longer. */
-function samePost(a: string, b: string): boolean {
-  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
-  return overlap([...new Set(tokenize(short))], long) >= SAME_POST_CONTAINMENT;
 }
 
 // Short words like "a" and "of" are in almost every post.

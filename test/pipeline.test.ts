@@ -134,6 +134,28 @@ describe("groupPosts", () => {
     expect(groups.map((g) => g.handle)).toEqual(["@a", "@b"]);
   });
 
+  test("joins a misread handle to the group with the same post text", () => {
+    const post = "She strives to be a power user of every tool she touches and writes about it";
+    const groups = groupPosts([
+      { second: 1920, line: line("@poteto", post) },
+      { second: 1925, line: line("@lauren", `${post} every week`, "Lauren") },
+      { second: 1930, line: line("@poteto", post) },
+    ]);
+    expect(groups.map((g) => [g.handle, g.firstSeen, g.lastSeen])).toEqual([["@poteto", 1920, 1930]]);
+  });
+
+  test("a placeholder handle joins by text, or keeps its own group", () => {
+    const post = "Placeholder handles come from the reader copying its output format";
+    const [placeholder] = parseReaderLines(`@handle | display name | ${post}`);
+    expect(placeholder).toEqual({ handle: "@unknown", displayName: "", text: post });
+    const groups = groupPosts([
+      { second: 1, line: placeholder },
+      { second: 6, line: line("@theo", post) },
+      { second: 11, line: { ...placeholder, text: "a different post that nobody can read the handle of" } },
+    ]);
+    expect(groups.map((g) => [g.handle, g.displayName, g.lastSeen])).toEqual([["@theo", "Name", 6], ["@unknown", "", 11]]);
+  });
+
   test("orders by second regardless of input order", () => {
     const [group] = groupPosts([
       { second: 20, line: line("@a", "same text here") },

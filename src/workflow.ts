@@ -139,7 +139,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
             );
             if (posts.length === 0) continue;
             const withAloud = await step.do(`read-aloud-${detector.id}-${run.start}`, AI_STEP, () =>
-              this.readAloud(videoId, detector, run, posts),
+              this.readAloud(videoId, detector, posts),
             );
             mentions.push(...withAloud.map((m) => ({ ...m, detector: detector.id })));
           }
@@ -291,21 +291,20 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     return words.length;
   }
 
-  private async readAloud(videoId: string, detector: Detector, run: Run, posts: PostGroup[]): Promise<Mention[]> {
+  private async readAloud(videoId: string, detector: Detector, posts: PostGroup[]): Promise<Mention[]> {
     const env = this.env;
-    const window = buildWindow(
-      await this.loadWords(videoId),
-      run.start - WINDOW_PADDING_SECONDS,
-      run.end + WINDOW_PADDING_SECONDS,
-    );
+    const words = await this.loadWords(videoId);
     const mentions: Mention[] = posts.map((p) => ({ ...p, detector: detector.id, readAloudP: null, readAloudAt: null, quote: null }));
-    if (!window.text) {
+    if (words.length === 0) {
       metrics.count("read_aloud.checks", mentions.length, { attributes: { "app.detector": detector.id, "read_aloud.result": "no_transcript" } });
       return mentions;
     }
 
-    const results = new Map<Mention, "read" | "not_read" | "no_quote">();
+    const results = new Map<Mention, "read" | "not_read" | "no_quote" | "no_transcript">();
     await pool(mentions, READ_ALOUD_CONCURRENCY, async (mention) => {
+      // A run can hold many posts, and the talk about the post before or after this one is not a reading of it.
+      const window = buildWindow(words, mention.firstSeen - WINDOW_PADDING_SECONDS, mention.lastSeen + WINDOW_PADDING_SECONDS);
+      if (!window.text) return void results.set(mention, "no_transcript");
       let post = { handle: mention.handle, displayName: mention.displayName, text: mention.slices[0] };
       let p = 0;
       for (const text of mention.slices.slice(0, READ_ALOUD_SLICES)) {
@@ -319,7 +318,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       const span = await findQuoteSpan(env, detector, post, window.text);
       results.set(mention, span ? "read" : "no_quote");
       if (!span) return;
-      mention.readAloudAt = Math.floor(timeAtOffset(window.offsets, span[0]) ?? run.start);
+      mention.readAloudAt = Math.floor(timeAtOffset(window.offsets, span[0]) ?? mention.firstSeen);
       mention.quote = expandSentence(window.text, span[0], span[1]);
     });
     // After the pool, so a failed check that retries the step cannot count the others twice.

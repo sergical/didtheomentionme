@@ -32,6 +32,10 @@ export interface ReaderLine {
 }
 
 const HANDLE = /^@[A-Za-z0-9_]{1,15}$/;
+/** The reader copies the `@handle | display name` placeholders from its prompt when it cannot read the name. */
+export const UNKNOWN_HANDLE = "@unknown";
+const PLACEHOLDER_HANDLES = new Set(["@handle", "@unknown", "@username", "@user"]);
+const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown"]);
 
 /** Parses the reader model output, one `@handle | display name | text` per line. Drops malformed lines. */
 export function parseReaderLines(output: string): ReaderLine[] {
@@ -40,9 +44,14 @@ export function parseReaderLines(output: string): ReaderLine[] {
     const parts = raw.replace(/^\s*[-*•]\s*/, "").split("|");
     if (parts.length < 3) continue;
     const handle = parts[0].trim();
+    const displayName = parts[1].trim();
     const text = parts.slice(2).join("|").trim();
     if (!HANDLE.test(handle) || text.length < 3) continue;
-    lines.push({ handle, displayName: parts[1].trim(), text });
+    lines.push({
+      handle: PLACEHOLDER_HANDLES.has(handle.toLowerCase()) ? UNKNOWN_HANDLE : handle,
+      displayName: PLACEHOLDER_NAMES.has(displayName.toLowerCase()) ? "" : displayName,
+      text,
+    });
   }
   return lines;
 }
@@ -65,6 +74,14 @@ export function overlap(queryTokens: string[], text: string): number {
   return queryTokens.filter((t) => have.has(t)).length / queryTokens.length;
 }
 
+const SAME_POST_CONTAINMENT = 0.8;
+
+/** One reading can be a slice of the other, so this compares the shorter text's words against the longer. */
+export function samePost(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return overlap([...new Set(tokenize(short))], long) >= SAME_POST_CONTAINMENT;
+}
+
 export interface Observation {
   second: number;
   line: ReaderLine;
@@ -84,6 +101,9 @@ export interface PostGroup {
 }
 
 const JACCARD_SAME_POST = 0.6;
+
+// A misread handle can match another post's text by chance when the text is short.
+const SAME_TEXT_MIN_CHARS = 40;
 
 function mostCommon(counts: Map<string, number>): string {
   let best = "";
@@ -123,6 +143,8 @@ export function sameHandle(a: string, b: string): boolean {
 /**
  * Groups reader lines of one run into one post group per handle. Frames 5 s apart show different
  * slices of a scrolled post or thread, so the group keeps each distinct slice of text.
+ * A line whose handle matches no group joins the group with the same post text, because the reader
+ * sometimes writes the display name or a placeholder when the handle is out of frame.
  */
 export function groupPosts(observations: Observation[]): PostGroup[] {
   interface Acc extends Omit<PostGroup, "text" | "slices"> {
@@ -133,7 +155,9 @@ export function groupPosts(observations: Observation[]): PostGroup[] {
   const groups: Acc[] = [];
   for (const { second, line } of [...observations].sort((a, b) => a.second - b.second)) {
     const norm = line.handle.toLowerCase();
-    let group = groups.find((g) => [...g.handles.keys()].some((h) => sameHandle(h.toLowerCase(), norm)));
+    const known = line.handle !== UNKNOWN_HANDLE;
+    let group = (known ? groups.find((g) => [...g.handles.keys()].some((h) => sameHandle(h.toLowerCase(), norm))) : undefined)
+      ?? (line.text.length >= SAME_TEXT_MIN_CHARS ? groups.find((g) => g.texts.some((t) => samePost(t, line.text))) : undefined);
     if (!group) {
       group = {
         handles: new Map(),
@@ -147,13 +171,13 @@ export function groupPosts(observations: Observation[]): PostGroup[] {
       };
       groups.push(group);
     }
-    bump(group.handles, line.handle);
+    if (known) bump(group.handles, line.handle);
     if (line.displayName) bump(group.names, line.displayName);
     const same = group.texts.findIndex((t) => t === line.text || jaccard(t, line.text) >= JACCARD_SAME_POST);
     if (same < 0) group.texts.push(line.text);
     else if (line.text.length > group.texts[same].length) group.texts[same] = line.text;
     group.lastSeen = Math.max(group.lastSeen, second);
-    group.handle = mostCommon(group.handles);
+    group.handle = mostCommon(group.handles) || UNKNOWN_HANDLE;
     group.displayName = mostCommon(group.names);
   }
   return groups.map(({ handle, displayName, texts, firstSeen, lastSeen, frameSecond }) => ({

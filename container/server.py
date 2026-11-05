@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -8,9 +9,13 @@ import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import sentry_sdk
+from sentry_sdk.integrations.stdlib import StdlibIntegration
 
 UPLOAD_THREADS = 16
 UPLOAD_ATTEMPTS = 5
@@ -24,13 +29,24 @@ AUDIO_SEGMENT_SECONDS = 600
 LOCK = threading.Lock()
 JOBS = {}
 
+sentry_sdk.init(
+    dsn=os.environ.get("SENTRY_DSN") or None,
+    traces_sample_rate=1.0,
+    environment="production",
+    # It makes one http.client span per upload, about 1,000 for a 10-minute video. `run` makes the subprocess spans.
+    disabled_integrations=[StdlibIntegration()],
+)
+
 
 class JobError(Exception):
     pass
 
 
 def run(cmd, timeout=3600):
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    with sentry_sdk.start_span(op="subprocess", name=cmd[0]) as span:
+        span.set_data("process.command", " ".join(cmd))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        span.set_data("process.exit_code", proc.returncode)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -113,6 +129,19 @@ def parse_vtt(text):
 def update_job(video_id, **fields):
     with LOCK:
         JOBS[video_id].update(fields)
+
+
+@contextmanager
+def stage(video_id, name):
+    """Reports the stage in the job status and times it as a span."""
+    update_job(video_id, stage=name)
+    with sentry_sdk.start_span(op="container.stage", name=name) as span:
+        yield span
+
+
+def trace_continued(headers, op, name):
+    """A transaction in the trace of the Worker request that sent these headers."""
+    return sentry_sdk.start_transaction(sentry_sdk.continue_trace(headers, op=op, name=name))
 
 
 def job_status(video_id):
@@ -224,14 +253,16 @@ def extract_audio_chunks(video_id, tmp, uploader):
     return len(chunks)
 
 
-def extract_frames(video_id, tmp, uploader):
+def download_video(video_id, tmp):
     run_checked(
         ["yt-dlp", "-f", VIDEO_FORMAT, "--no-playlist", "-o", str(tmp / "video.%(ext)s"),
          f"https://www.youtube.com/watch?v={video_id}"],
         "video download failed",
     )
-    video = next(p for p in tmp.glob("video.*") if p.suffix != ".part")
-    update_job(video_id, stage="frames")
+    return next(p for p in tmp.glob("video.*") if p.suffix != ".part")
+
+
+def extract_frames(tmp, video, video_id, uploader):
     for name in ("f640", "f1280"):
         (tmp / name).mkdir()
     # fps gives a 1/1 time base, so frame_pts names each image by its second, from 0.
@@ -273,52 +304,68 @@ def notify(upload_base, token, instance_id, status):
                 print(f"notify {instance_id} failed: {e}", file=sys.stderr, flush=True)
 
 
-def process_job(video_id, upload_base, token, instance_id):
+def process_job(video_id, upload_base, token, instance_id, trace_headers):
     tmp = Path(tempfile.mkdtemp(prefix=f"job-{video_id}-"))
     uploader = Uploader(video_id, upload_base, token)
-    try:
-        update_job(video_id, stage="metadata")
-        meta = fetch_metadata(video_id)
+    with trace_continued(trace_headers, "container.job", "extract job") as job:
+        job.set_data("video.id", video_id)
+        try:
+            with stage(video_id, "metadata"):
+                meta = fetch_metadata(video_id)
 
-        update_job(video_id, stage="captions")
-        words, captions_error = extract_words(video_id, tmp)
-        audio_chunks = 0
-        if words:
-            payload = json.dumps([[round(t, 2), w] for t, w in words], separators=(",", ":"))
-            uploader.submit(f"videos/{video_id}/words.json", "application/json", data=payload.encode())
-        else:
-            update_job(video_id, stage="audio")
-            audio_chunks = extract_audio_chunks(video_id, tmp, uploader)
+            with stage(video_id, "captions") as span:
+                words, captions_error = extract_words(video_id, tmp)
+                span.set_data("captions.words", len(words))
+            audio_chunks = 0
+            if words:
+                payload = json.dumps([[round(t, 2), w] for t, w in words], separators=(",", ":"))
+                uploader.submit(f"videos/{video_id}/words.json", "application/json", data=payload.encode())
+            else:
+                with stage(video_id, "audio") as span:
+                    audio_chunks = extract_audio_chunks(video_id, tmp, uploader)
+                    span.set_data("audio.chunks", audio_chunks)
 
-        update_job(video_id, stage="download")
-        frames, kept_seconds = extract_frames(video_id, tmp, uploader)
+            with stage(video_id, "download"):
+                video = download_video(video_id, tmp)
+            with stage(video_id, "frames") as span:
+                frames, kept_seconds = extract_frames(tmp, video, video_id, uploader)
+                span.set_data("frames.total", frames)
+                span.set_data("frames.kept", len(kept_seconds))
 
-        update_job(video_id, stage="upload")
-        uploader.wait()
-        manifest = {
-            "videoId": video_id,
-            "title": meta["title"],
-            "duration": meta["duration"],
-            "publishedAt": meta["publishedAt"],
-            "frames": frames,
-            "keptSeconds": kept_seconds,
-            "hasCaptions": bool(words),
-            "captionsError": captions_error,
-            "audioChunks": audio_chunks,
-        }
-        uploader.submit(f"videos/{video_id}/manifest.json", "application/json", data=json.dumps(manifest).encode())
-        uploader.wait()
-        update_job(video_id, state="done", stage="done", manifest=manifest)
-    except Exception as e:
-        update_job(video_id, state="error", error=str(e) if isinstance(e, JobError) else f"{type(e).__name__}: {e}")
-    finally:
-        uploader.close()
-        shutil.rmtree(tmp, ignore_errors=True)
+            # Uploads start as soon as each file is ready, so this stage is only the wait for the last ones.
+            with stage(video_id, "upload") as span:
+                uploader.wait()
+                manifest = {
+                    "videoId": video_id,
+                    "title": meta["title"],
+                    "duration": meta["duration"],
+                    "publishedAt": meta["publishedAt"],
+                    "frames": frames,
+                    "keptSeconds": kept_seconds,
+                    "hasCaptions": bool(words),
+                    "captionsError": captions_error,
+                    "audioChunks": audio_chunks,
+                }
+                uploader.submit(f"videos/{video_id}/manifest.json", "application/json", data=json.dumps(manifest).encode())
+                uploader.wait()
+                span.set_data("upload.files", len(uploader.futures))
+            update_job(video_id, state="done", stage="done", manifest=manifest)
+        except Exception as e:
+            job.set_status("internal_error")
+            # The workflow reports a JobError. Anything else is a bug here, so it gets its Python stack trace.
+            if not isinstance(e, JobError):
+                sentry_sdk.capture_exception(e)
+            update_job(video_id, state="error", error=str(e) if isinstance(e, JobError) else f"{type(e).__name__}: {e}")
+        finally:
+            uploader.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+    # The workflow destroys this container soon after the event, so the spans are sent first.
+    sentry_sdk.flush(timeout=10)
     if instance_id:
         notify(upload_base, token, instance_id, job_status(video_id))
 
 
-def start_job(video_id, upload_base, token, instance_id):
+def start_job(video_id, upload_base, token, instance_id, trace_headers):
     """Returns the job status; starts a thread unless a job is running or done."""
     with LOCK:
         job = JOBS.get(video_id)
@@ -327,7 +374,7 @@ def start_job(video_id, upload_base, token, instance_id):
                 "state": "running", "stage": "metadata", "uploaded": 0, "total": 0,
                 "error": None, "manifest": None,
             }
-            threading.Thread(target=process_job, args=(video_id, upload_base, token, instance_id), daemon=True).start()
+            threading.Thread(target=process_job, args=(video_id, upload_base, token, instance_id, trace_headers), daemon=True).start()
     return job_status(video_id)
 
 
@@ -341,6 +388,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def trace_headers(self):
+        return {name: self.headers[name] for name in ("sentry-trace", "baggage") if self.headers.get(name)}
 
     def read_json(self):
         length = int(self.headers.get("content-length") or 0)
@@ -374,9 +424,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"error": "invalid channelId"})
             try:
                 limit = int(body.get("limit", 80))
-                self.send_json(200, {"videos": list_videos(channel_id, limit)})
+                with trace_continued(self.trace_headers(), "container.list", "list videos"):
+                    videos = list_videos(channel_id, limit)
+                response = (200, {"videos": videos})
             except Exception as e:
-                self.send_json(502, {"error": str(e)})
+                response = (502, {"error": str(e)})
+            # A backfill destroys this container right after its last list.
+            sentry_sdk.flush(timeout=5)
+            self.send_json(*response)
         elif self.path == "/jobs":
             video_id, upload_base, token, instance_id = (
                 str(body.get(k, "")) for k in ("videoId", "uploadBase", "token", "instanceId")
@@ -385,13 +440,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(400, {"error": "videoId, uploadBase and token are required"})
             if instance_id and not ID_PATTERN.match(instance_id):
                 return self.send_json(400, {"error": "invalid instanceId"})
-            self.send_json(202, {**start_job(video_id, upload_base, token, instance_id), "protocol": JOB_PROTOCOL})
+            status = start_job(video_id, upload_base, token, instance_id, self.trace_headers())
+            self.send_json(202, {**status, "protocol": JOB_PROTOCOL})
         else:
             self.send_json(404, {"error": "not found"})
 
 
 if __name__ == "__main__":
-    import os
-
     ThreadingHTTPServer.daemon_threads = True
     ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), Handler).serve_forever()

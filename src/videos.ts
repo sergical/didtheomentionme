@@ -1,5 +1,5 @@
 import { getContainer } from "@cloudflare/containers";
-import { logger, metrics } from "@sentry/cloudflare";
+import { getTraceData, logger, metrics } from "@sentry/cloudflare";
 import { MAX_IN_FLIGHT, MAX_RETRIES, MIN_DURATION_SECONDS, RETRY_BASE_MINUTES, type Source } from "./config";
 import type { Env } from "./env";
 import { step, workflowTraceId } from "./telemetry";
@@ -12,7 +12,12 @@ export interface VideoInfo {
 }
 
 export function containerFetch(env: Env, name: string, path: string, init?: RequestInit): Promise<Response> {
-  return step(`container ${init?.method ?? "GET"} ${path}`, () => getContainer(env.MEDIA, name).fetch(`http://container${path}`, init));
+  return step(`container ${init?.method ?? "GET"} ${path}`, () => {
+    // The container's Python SDK continues the trace from these headers.
+    const headers = new Headers(init?.headers);
+    for (const [header, value] of Object.entries(getTraceData())) headers.set(header, value);
+    return getContainer(env.MEDIA, name).fetch(`http://container${path}`, { ...init, headers });
+  });
 }
 
 /**

@@ -14,4 +14,6 @@ export interface Env {
   VIDEO_WORKFLOW: Workflow<VideoParams>;
   INTERNAL_TOKEN: string;
   SENTRY_DSN?: string;
+  /** The didtheomentionme-container Sentry project. No DSN turns the container's Sentry off. */
+  CONTAINER_SENTRY_DSN?: string;
 }

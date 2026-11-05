@@ -47,6 +47,7 @@ const route = (request: Request, env: Env) =>
 export class MediaContainer extends Container<Env> {
   defaultPort = 8080;
   sleepAfter = "10m";
+  envVars = { SENTRY_DSN: this.env.CONTAINER_SENTRY_DSN ?? "" };
   static {
     // Assign instead of declaring a static field: the base class's setter must run, because
     // ContainerProxy looks handlers up in the registry that the setter fills.

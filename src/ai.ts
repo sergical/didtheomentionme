@@ -12,6 +12,8 @@ const CLEF = "@cf/cloudflare/clef";
 const CLAIRIC = "@cf/cloudflare/clairic";
 const GEMMA = "@cf/google/gemma-4-26b-a4b-it";
 const EMBED = "@cf/baai/bge-m3";
+/** A feed frame with many posts takes gemma up to 10 s, so a call still running at 15 s is stuck. */
+const READ_HEDGE_MS = 15_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,6 +36,35 @@ export async function runModel(env: Env, model: string, inputs: unknown, attempt
       await sleep(1000 * 2 ** attempt + Math.random() * 500);
     }
   }
+}
+
+/**
+ * Starts a second call when the first has not answered after `delayMs`, and returns the first answer. Workers AI
+ * sometimes holds one gemma call for over a minute, while the same frame answers in seconds when sent again.
+ * It fails when the second call fails, or when neither answers in 4 × `delayMs`, so the step can retry.
+ */
+export function hedge<T>(model: string, delayMs: number, call: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let running = 0;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const settle = <A>(fn: (value: A) => void) => (value: A) => {
+      timers.forEach(clearTimeout);
+      fn(value);
+    };
+    const start = (second: boolean) => {
+      running++;
+      call().then(settle(resolve), (err) => {
+        if (--running === 0 || second) settle(reject)(err);
+      });
+    };
+    timers.push(setTimeout(() => {
+      logger.warn(logger.fmt`${model} gave no answer in ${delayMs} ms, sent the call again`, { "gen_ai.request.model": model });
+      metrics.count("ai.hedge", 1, { attributes: { "gen_ai.request.model": model } });
+      start(true);
+    }, delayMs));
+    timers.push(setTimeout(() => settle(reject)(new Error(`${model} gave no answer in ${4 * delayMs} ms`)), 4 * delayMs));
+    start(false);
+  });
 }
 
 export async function pool<T>(items: T[], size: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
@@ -83,7 +114,9 @@ export async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer,
       },
     ],
   };
-  const result = await withFrameReference(frame, () => chatSpan(GEMMA, inputs, () => runModel(env, GEMMA, inputs)));
+  const result = await withFrameReference(frame, () =>
+    chatSpan(GEMMA, inputs, () => hedge(GEMMA, READ_HEDGE_MS, () => runModel(env, GEMMA, inputs))),
+  );
   const text = result?.choices?.[0]?.message?.content ?? result?.response;
   if (typeof text !== "string") throw new Error(`gemma-4 returned no text: ${JSON.stringify(result).slice(0, 200)}`);
   return text;

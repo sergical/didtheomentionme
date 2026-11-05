@@ -26,7 +26,11 @@ import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRu
 
 const DETECT_BATCH = 120;
 const DETECT_CONCURRENCY = 12;
+/** 3 steps of 12 calls send clef-flash about 2,600 calls a minute. The Workers AI limit for image models is 3,000. */
+const DETECT_STEPS = 3;
 const READ_CONCURRENCY = 6;
+/** Most runs need 1 to 5 gemma calls, so 3 runs at a time keep gemma under its 300 calls a minute. */
+const READ_RUNS = 3;
 const READ_ALOUD_CONCURRENCY = 4;
 const READ_ALOUD_SLICES = 3;
 const WINDOW_PADDING_SECONDS = 30;
@@ -130,16 +134,19 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         const attributes = { "app.detector": detector.id };
         const probs = await phase("detect", step, (step) => this.detect(videoId, detector, manifest, timeline, step), attributes);
         await phase("read", step, async (step) => {
-          for (const run of findRuns(probs, detector.frameThreshold)) {
+          const runs = findRuns(probs, detector.frameThreshold);
+          const found: Mention[][] = runs.map(() => []);
+          await pool(runs, READ_RUNS, async (run, i) => {
             const posts = await step.do(`read-${detector.id}-${run.start}`, AI_STEP, () =>
               this.readRun(videoId, detector, run, timeline),
             );
-            if (posts.length === 0) continue;
+            if (posts.length === 0) return;
             const withAloud = await step.do(`read-aloud-${detector.id}-${run.start}`, AI_STEP, () =>
               this.readAloud(videoId, detector, posts),
             );
-            mentions.push(...withAloud.map((m) => ({ ...m, detector: detector.id })));
-          }
+            found[i] = withAloud.map((m) => ({ ...m, detector: detector.id }));
+          });
+          mentions.push(...found.flat());
         }, attributes);
       }
     }
@@ -258,11 +265,13 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
 
   private async detect(videoId: string, detector: Detector, manifest: Manifest, timeline: number[], step: PhaseStep): Promise<number[]> {
     const env = this.env;
-    const probs: number[] = [];
     const kept = frameSeconds(manifest.frames, manifest.keptSeconds);
-    for (let from = 0; from < kept.length; from += DETECT_BATCH) {
-      const seconds = kept.slice(from, from + DETECT_BATCH);
-      const batch = await step.do(`detect-${detector.id}-${from}`, AI_STEP, async () => {
+    const batches = Array.from({ length: Math.ceil(kept.length / DETECT_BATCH) }, (_, b) =>
+      kept.slice(b * DETECT_BATCH, (b + 1) * DETECT_BATCH),
+    );
+    const probs: number[][] = new Array(batches.length);
+    await pool(batches, DETECT_STEPS, async (seconds, b) => {
+      probs[b] = await step.do(`detect-${detector.id}-${b * DETECT_BATCH}`, AI_STEP, async () => {
         const out: number[] = new Array(seconds.length).fill(0);
         await pool(seconds, DETECT_CONCURRENCY, async (second, i) => {
           const frame = await env.BUCKET.get(key(videoId, `f640/${second}.jpg`));
@@ -271,9 +280,8 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
         });
         return out;
       });
-      probs.push(...batch);
-    }
-    return inheritProbabilities(timeline, kept, probs);
+    });
+    return inheritProbabilities(timeline, kept, probs.flat());
   }
 
   private async readRun(videoId: string, detector: Detector, run: Run, timeline: number[]): Promise<PostGroup[]> {

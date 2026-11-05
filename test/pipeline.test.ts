@@ -63,6 +63,12 @@ describe("parseReaderLines", () => {
     expect(parseReaderLines("@patloeber | Patrick | ? ? ? ?")).toEqual([]);
   });
 
+  test("a frame with more lines than an X page can show is stream chat", () => {
+    const frame = (count: number) => Array.from({ length: count }, (_, i) => `@user${i} | User | message ${i}`).join("\n");
+    expect(parseReaderLines(frame(7))).toHaveLength(7);
+    expect(parseReaderLines(frame(8))).toEqual([]);
+  });
+
   test("keeps a valid line", () => {
     expect(parseReaderLines("@ThePrimeagen | ThePrimeagen | tested out Haiku vs Luna")).toEqual([
       { handle: "@ThePrimeagen", displayName: "ThePrimeagen", text: "tested out Haiku vs Luna" },

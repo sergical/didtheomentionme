@@ -9,7 +9,8 @@
   "routes": [{ "pattern": "didtheomention.me", "custom_domain": true }],
   "triggers": { "crons": ["*/10 * * * *"] },
   // After its last sleep, a workflow runs detection in one invocation: about 2 subrequests per video second.
-  "limits": { "subrequests": 100000 },
+  // Encoding those frames passed the default CPU limit when two long videos ran, and a retry repeats the paid calls.
+  "limits": { "subrequests": 100000, "cpu_ms": 300000 },
   "ai": { "binding": "AI" },
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "didtheomentionme-media" }],
   "d1_databases": [

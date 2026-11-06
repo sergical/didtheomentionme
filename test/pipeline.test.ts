@@ -13,6 +13,7 @@ import {
   overlap,
   parseReaderLines,
   pickSeconds,
+  quoteSpan,
   sameHandle,
   timeAtOffset,
   wordsFromSegments,
@@ -303,6 +304,24 @@ describe("sameHandle", () => {
     expect(sameHandle("@theo", "@theo_t3")).toBe(false);
     expect(sameHandle("@theo", "@thea")).toBe(false);
     expect(sameHandle("@claudeai", "@ClaudeDevs".toLowerCase())).toBe(false);
+  });
+});
+
+describe("quoteSpan", () => {
+  const text = "Back in May we did a promotion";
+
+  test("keeps a span of three or more words", () => {
+    expect(quoteSpan([0, 11], text)).toEqual([0, 11]);
+  });
+
+  test("rejects a lone name, a missing span and a span with no end", () => {
+    expect(quoteSpan([8, 11], text)).toBeNull();
+    expect(quoteSpan(undefined, text)).toBeNull();
+    expect(quoteSpan([8, null], text)).toBeNull();
+  });
+
+  test("does not count punctuation as words", () => {
+    expect(quoteSpan([0, 7], "— Jev —")).toBeNull();
   });
 });
 

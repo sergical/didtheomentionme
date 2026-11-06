@@ -257,6 +257,17 @@ export function timeAtOffset(offsets: [number, number][], char: number): number 
   return (offsets.findLast(([offset]) => offset <= char) ?? offsets[0])?.[1];
 }
 
+const MIN_QUOTE_WORDS = 3;
+
+/** Clairic's span, or null if it is too short to be a reading: a lone "Jev" gives no time worth linking to. */
+export function quoteSpan(span: unknown, transcript: string): [number, number] | null {
+  if (!Array.isArray(span)) return null;
+  const [start, end] = span;
+  if (typeof start !== "number" || typeof end !== "number") return null;
+  const words = transcript.slice(start, end).split(/\s+/).filter((word) => /[\p{L}\p{N}]/u.test(word));
+  return words.length < MIN_QUOTE_WORDS ? null : [start, end];
+}
+
 const isTerminator = (c: string | undefined) => c === "." || c === "?" || c === "!";
 
 /**

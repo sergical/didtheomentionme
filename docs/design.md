@@ -14,7 +14,7 @@ The model choices come from experiments recorded in `experiments/` (one 41 min v
 | Is it really an X post, and not stream chat? (each picked frame, 1920 px) | `@cf/cloudflare/clef-flash` | see `pageThreshold` and `chatThreshold` |
 | Read handle, display name, text (1920 px) | `@cf/qwen/qwen3.8-27b` | 48/49 handles exact on 33 hand-checked frames |
 | Did the speaker read this post aloud? | `@cf/cloudflare/clef` | yes ≥ 0.32, no ≤ 0.26 |
-| Where in the transcript? | `@cf/cloudflare/clairic` (`text` field span) | 11/11 within ~10 s |
+| Where in the transcript? | `@cf/cloudflare/clairic` (`text` field span) | 26/28 near a word match on 3 unseen videos; weak on paraphrase |
 | Text search over on-screen posts | D1 FTS5 + Vectorize (`@cf/baai/bge-m3`) | — |
 
 ## Components
@@ -162,7 +162,7 @@ whose latest workflow instance is missing or finished, so a failed workflow cann
 - read-aloud: transcript window = words from run start - 30 s to run end + 30 s, joined with spaces, keeping the
   character offset of each word. clef `noul` with `readAloudQuestion` on each of the 3 longest
   slices; keep the highest p and its slice (a screenshot in a post can be longer than the post). If p ≥ `readAloudThreshold`, clairic
-  `text` field with `quoteInstructions`; map `span[0]` to the word time (last word whose offset ≤ span start);
+  `text` field with `quoteInstructions`; a span under 3 words is no quote, so the post counts as not read; map `span[0]` to the word time (last word whose offset ≤ span start);
   the quote is the sentence of the window text that contains the span (expand to `.`, `?`, `!` or 120 chars).
 - store: in one batch, copy the old vector ids of the video to `stale_vectors`, delete its mentions, insert the new
   mentions and FTS rows (re-runs are idempotent). Then delete the `stale_vectors` ids from Vectorize and their rows.

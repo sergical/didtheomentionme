@@ -57,7 +57,8 @@ export const SOURCES: Source[] = [
   },
 ];
 
-const postRef = (post: Post) => `this X post${post.handle === UNKNOWN_HANDLE ? "" : ` by ${post.handle}`}: "${post.text}"`;
+const postName = (post: Post) => `this X post${post.handle === UNKNOWN_HANDLE ? "" : ` by ${post.handle}`}`;
+const postRef = (post: Post) => `${postName(post)}: "${post.text}"`;
 
 export const DETECTORS: Detector[] = [
   {
@@ -80,8 +81,12 @@ export const DETECTORS: Detector[] = [
     readAloudQuestion: (post) =>
       `This is a transcript of a tech streamer while ${postRef(post)} is on screen. Does the speaker read aloud, quote or paraphrase that post's content?`,
     readAloudThreshold: 0.3,
+    /**
+     * Asked only for "the words", Clairic answers with a lone name such as "enterprise", often far from the reading.
+     * Keep the post text after "word for word": with it before, 5 of 39 real readings came back as "Yes" or a name.
+     */
     quoteInstructions: (post) =>
-      `The words where the speaker reads aloud, quotes or paraphrases ${postRef(post)}. Null if the speaker does not.`,
+      `The complete sentence or sentences where the speaker starts reading ${postName(post)} word for word: "${post.text}". Copy at least ten words. Do not return a single name. Null if the speaker does not read it.`,
   },
 ];
 

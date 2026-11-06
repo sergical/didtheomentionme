@@ -36,6 +36,9 @@ const HANDLE = /^@[A-Za-z0-9_]{1,15}$/;
 export const UNKNOWN_HANDLE = "@unknown";
 const PLACEHOLDER_HANDLES = new Set(["@handle", "@unknown", "@username", "@user"]);
 const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown"]);
+/** The Live on X side panel shows "<name> is hosting <stream title>", which the reader copies as a post. */
+const LIVE_ON_X_NAME = /\bis hosting$/;
+const LIVE_ON_X_TEXT = /^is hosting\b/;
 
 /** 11 of 12 sampled frames with 8 or more lines were stream chat. The other was a wall of real posts. */
 export const MAX_POSTS_WITHOUT_CHAT_CHECK = 7;
@@ -50,6 +53,7 @@ export function parseReaderLines(output: string): ReaderLine[] {
     const displayName = parts[1].trim();
     const text = parts.slice(2).join("|").trim();
     if (!HANDLE.test(handle) || text.length < 3 || tokenize(text).length === 0) continue;
+    if (LIVE_ON_X_NAME.test(displayName) || LIVE_ON_X_TEXT.test(text)) continue;
     lines.push({
       handle: PLACEHOLDER_HANDLES.has(handle.toLowerCase()) ? UNKNOWN_HANDLE : handle,
       displayName: PLACEHOLDER_NAMES.has(displayName.toLowerCase()) ? "" : displayName,

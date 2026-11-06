@@ -69,6 +69,21 @@ describe("parseReaderLines", () => {
     ]);
   });
 
+  test("rejects Live on X panel lines", () => {
+    const output = [
+      "@Esfand | Esfand is hosting | BIG CORN BEGGING WOCO",
+      "@giri | giri | is hosting I cant believe IM A VTUBER",
+      "@teej_dv | teej dv | is hosting",
+    ].join("\n");
+    expect(parseReaderLines(output)).toEqual([]);
+  });
+
+  test("keeps a post that uses the word hosting", () => {
+    for (const text of ["Cloudflare is hosting our app and hosting is hard", "Is hosting on Cloudflare free?"]) {
+      expect(parseReaderLines(`@KentonVarda | Kenton Varda | ${text}`)).toEqual([{ handle: "@KentonVarda", displayName: "Kenton Varda", text }]);
+    }
+  });
+
   test("rejects handles with spaces or dots", () => {
     const output = ["@Pipkin Pippa | Pipkin | some text here", "@t3.gg | Theo | some text here"].join("\n");
     expect(parseReaderLines(output)).toEqual([]);

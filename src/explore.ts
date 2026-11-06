@@ -1,6 +1,6 @@
 import { SOURCES } from "./config";
 import type { Env } from "./env";
-import { formatTime } from "./pipeline";
+import { UNKNOWN_HANDLE, formatTime } from "./pipeline";
 import { reading } from "./lookup";
 import { NEW_TAB, PICKER_SCRIPT, PLAY, creatorPicker, documentHead, esc, formatDate, hue, plural, saidFigure, youtube, type SourceRef } from "./page";
 import { explorePath, resultPath, SITE_ORIGIN } from "./share";
@@ -95,7 +95,7 @@ export async function exploreData(env: Env, source: SourceRef, sources: SourceRe
     all<Account>(
       `SELECT m.handle_norm AS handleNorm, MAX(m.handle) AS handle, COUNT(*) AS shown,
          SUM(m.read_aloud_at IS NOT NULL) AS aloud, COUNT(DISTINCT m.video_id) AS videos
-       FROM mentions m ${DONE} GROUP BY m.handle_norm ORDER BY shown DESC, videos DESC LIMIT ?`,
+       FROM mentions m ${DONE} AND m.handle_norm != '' GROUP BY m.handle_norm ORDER BY shown DESC, videos DESC LIMIT ?`,
       source.id, TOP_ACCOUNTS,
     ),
     all<{ bin: number; n: number }>(
@@ -121,7 +121,7 @@ export async function exploreData(env: Env, source: SourceRef, sources: SourceRe
     ),
     all<{ videoId: string; handle: string; shown: number }>(
       `SELECT m.video_id AS videoId, MAX(m.handle) AS handle, COUNT(*) AS shown
-       FROM mentions m ${DONE} GROUP BY m.video_id, m.handle_norm ORDER BY shown DESC, handle`,
+       FROM mentions m ${DONE} AND m.handle_norm != '' GROUP BY m.video_id, m.handle_norm ORDER BY shown DESC, handle`,
       source.id,
     ),
     all<{ source: string; handleNorm: string; n: number }>(
@@ -317,13 +317,14 @@ const minutes = (seconds: number) => (seconds < 60 ? `${seconds} s` : `${Math.ro
 function longReads({ longReads: list, source }: ExploreData): string {
   if (list.length === 0) return "";
   const cards = list.map((r) => {
-    const name = r.displayName || r.handle.replace(/^@/, "");
+    const known = r.handle !== UNKNOWN_HANDLE;
+    const name = r.displayName || (known ? r.handle.replace(/^@/, "") : "Unknown account");
     const at = youtube(r.videoId, r.firstSeen);
     return `<li class="match">
 <a class="frame" ${NEW_TAB} href="${at}" tabindex="-1" aria-hidden="true"><img src="/frame/${esc(r.videoId)}/${r.frameSecond}.jpg" alt="" loading="lazy" decoding="async"></a>
 <div class="body">
 <div class="video"><a ${NEW_TAB} href="${at}">${esc(r.title ?? r.videoId)}</a></div>
-<p class="who"><b>${esc(name)}</b><span>${esc(r.handle)}</span></p>
+<p class="who"><b>${esc(name)}</b>${known ? `<span>${esc(r.handle)}</span>` : ""}</p>
 ${saidFigure(source.name, r.videoId, { at: r.readAt, quote: r.quote, reading: reading(r.quote, r.text) })}
 <p class="times"><span>On screen for ${minutes(r.lastSeen - r.firstSeen)} from</span><a class="chip" ${NEW_TAB} href="${at}">${PLAY}${formatTime(r.firstSeen)}</a></p>
 </div>

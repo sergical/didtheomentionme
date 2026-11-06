@@ -10,7 +10,7 @@ const PRICES: Record<string, { input: number; output?: number }> = {
   "@cf/cloudflare/clef-flash": { input: 0.038 },
   "@cf/cloudflare/clef": { input: 0.24 },
   "@cf/cloudflare/clairic": { input: 0.1 },
-  "@cf/google/gemma-4-26b-a4b-it": { input: 0.1, output: 0.3 },
+  "@cf/qwen/qwen3.8-27b": { input: 0.45, output: 3.2 },
   "@cf/baai/bge-m3": { input: 0.012 },
 };
 
@@ -57,7 +57,7 @@ export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
       span.attributes["gen_ai.cost.output_tokens"] = outputCost;
       span.attributes["gen_ai.cost.total_tokens"] = inputCost + outputCost;
     }
-    // The SDK records gen_ai inputs as they are, so each frame sent to gemma would add its full base64 JPEG.
+    // The SDK records gen_ai inputs as they are, so each frame sent to the reader would add its full base64 JPEG.
     const messages = span.attributes["gen_ai.input.messages"];
     if (typeof messages === "string") {
       span.attributes["gen_ai.input.messages"] = redactImages(messages, span.attributes["app.frame.url"]);
@@ -143,7 +143,7 @@ export async function workflowTraceId(instanceId: string): Promise<string> {
 type ChatResult = { choices?: { message?: { content?: unknown }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
 
 /**
- * A gen_ai span for one chat call. gemma-4 answers in the OpenAI `choices` shape, but the SDK reads chat output only
+ * A gen_ai span for one chat call. The reader answers in the OpenAI `choices` shape, but the SDK reads chat output only
  * from `response`, so this span records the answer and the SDK's own span is suppressed.
  */
 export const chatSpan = <T extends ChatResult>(model: string, inputs: { max_tokens?: number; messages: unknown[] }, fn: () => Promise<T>) =>

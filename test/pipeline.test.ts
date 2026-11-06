@@ -9,6 +9,7 @@ import {
   formatTime,
   groupPosts,
   jaccard,
+  normalizeHandle,
   overlap,
   parseReaderLines,
   pickSeconds,
@@ -84,9 +85,8 @@ describe("parseReaderLines", () => {
     }
   });
 
-  test("rejects handles with spaces or dots", () => {
-    const output = ["@Pipkin Pippa | Pipkin | some text here", "@t3.gg | Theo | some text here"].join("\n");
-    expect(parseReaderLines(output)).toEqual([]);
+  test("rejects handles with dots", () => {
+    expect(parseReaderLines("@t3.gg | Theo | some text here")).toEqual([]);
   });
 
   test("rejects handles longer than 15 characters and short text", () => {
@@ -98,12 +98,46 @@ describe("parseReaderLines", () => {
     const output = "Here are the posts:\n@theo | Theo | a | b | c";
     expect(parseReaderLines(output)).toEqual([{ handle: "@theo", displayName: "Theo", text: "a | b | c" }]);
   });
+
+  test("joins a post written over several lines", () => {
+    expect(parseReaderLines("@a | A | first line\n\nsecond line\n@b | B | another post")).toEqual([
+      { handle: "@a", displayName: "A", text: "first line second line" },
+      { handle: "@b", displayName: "B", text: "another post" },
+    ]);
+  });
+
+  test("a post can hold the column separator on a later line", () => {
+    expect(parseReaderLines("@a | A | Supported commands:\nread | write | execute")).toEqual([
+      { handle: "@a", displayName: "A", text: "Supported commands: read | write | execute" },
+    ]);
+  });
+
+  test("NONE is no posts", () => {
+    expect(parseReaderLines("NONE")).toEqual([]);
+  });
+
+  test("marks an unreadable handle as unknown and keeps the post", () => {
+    for (const handle of ["@unknown", "?", "@ma?ia", "@chasmmm…", "@chasmmm...", "@Pipkin Pippa", ""]) {
+      expect(parseReaderLines(`${handle} | Name | a real post`)).toEqual([{ handle: "@unknown", displayName: "Name", text: "a real post" }]);
+    }
+  });
+
+  test("drops a handle that X does not allow", () => {
+    expect(parseReaderLines("@maria.rcks | Maria | a post on another site\n@viktoriamarkovska4236 | V | a comment")).toEqual([]);
+  });
 });
 
 describe("jaccard", () => {
   test("identical texts score 1, disjoint texts 0", () => {
     expect(jaccard("Haiku is fast", "haiku IS fast")).toBe(1);
     expect(jaccard("one two", "three four")).toBe(0);
+  });
+});
+
+describe("normalizeHandle", () => {
+  test("an unknown handle is empty, so a search cannot match it", () => {
+    expect(normalizeHandle("@unknown")).toBe("");
+    expect(normalizeHandle("@ThePrimeagen")).toBe("theprimeagen");
   });
 });
 
@@ -181,6 +215,26 @@ describe("groupPosts", () => {
       { second: 11, line: { ...placeholder, text: "a different post that nobody can read the handle of" } },
     ]);
     expect(groups.map((g) => [g.handle, g.displayName, g.lastSeen])).toEqual([["@theo", "Name", 6], ["@unknown", "", 11]]);
+  });
+
+  test("short unknown posts join by text instead of one group per frame", () => {
+    const unknown = (text: string) => ({ handle: "@unknown", displayName: "", text });
+    const groups = groupPosts([
+      { second: 1, line: unknown("this is great") },
+      { second: 6, line: unknown("this is great") },
+      { second: 11, line: unknown("a different short post") },
+    ]);
+    expect(groups.map((g) => [g.firstSeen, g.lastSeen])).toEqual([[1, 6], [11, 11]]);
+  });
+
+  test("short unknown posts stay apart when the words or the display name differ", () => {
+    const unknown = (displayName: string, text: string) => ({ handle: "@unknown", displayName, text });
+    const groups = groupPosts([
+      { second: 1, line: unknown("Alice", "this is great") },
+      { second: 6, line: unknown("Alice", "this is not great") },
+      { second: 11, line: unknown("Bob", "this is great") },
+    ]);
+    expect(groups.map((g) => [g.displayName, g.text])).toEqual([["Alice", "this is great"], ["Alice", "this is not great"], ["Bob", "this is great"]]);
   });
 
   test("orders by second regardless of input order", () => {

@@ -1,5 +1,5 @@
 import { explorePath, resultPath, shareTitle, SITE_ORIGIN } from "./share";
-import { formatTime } from "./pipeline";
+import { UNKNOWN_HANDLE, formatTime } from "./pipeline";
 import type { LookupInput, LookupResult, Match, Reading } from "./lookup";
 
 const escapes: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -404,7 +404,7 @@ function card(m: Match, i: number, words: Set<string>, sourceName: string, showT
 <a class="frame" ${NEW_TAB} href="${youtube(m.videoId, m.firstSeen)}" tabindex="-1" aria-hidden="true"><img src="${esc(m.frameUrl)}" alt="" loading="${eager && i < 2 ? "eager" : "lazy"}" decoding="async"></a>
 <div class="body">
 <div class="video"><a ${NEW_TAB} href="${youtube(m.videoId, m.firstSeen)}">${esc(m.title ?? m.videoId)}</a><time datetime="${esc(m.publishedAt)}">${esc(formatDate(m.publishedAt))}</time></div>
-<p class="excerpt${showText ? "" : " sr-only"}">${showText ? "" : `Post by ${esc(m.handle)}: `}${highlight(fromFirstHit(m.text, words), words)}</p>
+<p class="excerpt${showText ? "" : " sr-only"}">${showText ? "" : `Post by ${m.handle === UNKNOWN_HANDLE ? "an unknown account" : esc(m.handle)}: `}${highlight(fromFirstHit(m.text, words), words)}</p>
 ${said}
 <p class="times"><span>On screen</span>${seen}${m.exact ? '<span class="badge">Your post</span>' : ""}</p>
 </div>

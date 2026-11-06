@@ -32,33 +32,48 @@ export interface ReaderLine {
 }
 
 const HANDLE = /^@[A-Za-z0-9_]{1,15}$/;
-/** The reader copies the `@handle | display name` placeholders from its prompt when it cannot read the name. */
+/** A post whose handle is not on screen or cannot be read. It is not an account. */
 export const UNKNOWN_HANDLE = "@unknown";
 const PLACEHOLDER_HANDLES = new Set(["@handle", "@unknown", "@username", "@user"]);
 const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown"]);
+/** The reader writes ? for characters it cannot read, copies the … of a cropped handle, and puts an @ on a display name (`@Pipkin Pippa`). */
+const UNREADABLE_HANDLE = /^\?*$|^@.*(\s|\?|…|\.\.\.$)/;
 /** The Live on X side panel shows "<name> is hosting <stream title>", which the reader copies as a post. */
 const LIVE_ON_X_NAME = /\bis hosting$/;
 const LIVE_ON_X_TEXT = /^is hosting\b/;
 
-/** 11 of 12 sampled frames with 8 or more lines were stream chat. The other was a wall of real posts. */
-export const MAX_POSTS_WITHOUT_CHAT_CHECK = 7;
+/** The value of `mentions.handle_norm`. It is empty for an unknown handle, so no handle search can match it. */
+export const normalizeHandle = (handle: string) => (handle === UNKNOWN_HANDLE ? "" : handle.replace(/^@/, "").toLowerCase());
 
-/** Parses the reader model output, one `@handle | display name | text` per line. Drops malformed lines. */
+/** The reader copies line breaks of a post, and a post can hold `|`, so a line that does not start with a handle column continues the post above it. */
+function readerRows(output: string): string[] {
+  const rows: string[] = [];
+  for (const raw of output.split("\n")) {
+    const line = raw.replace(/^\s*[-*•]\s*/, "").trim();
+    if (/^[@?|]/.test(line) && line.split("|").length >= 3) rows.push(line);
+    else if (line && rows.length) rows[rows.length - 1] += ` ${line}`;
+  }
+  return rows;
+}
+
+/** A handle of any other shape, such as `@t3.gg`, is not from X. */
+function readerHandle(raw: string): string | null {
+  const handle = raw.trim();
+  if (PLACEHOLDER_HANDLES.has(handle.toLowerCase()) || UNREADABLE_HANDLE.test(handle)) return UNKNOWN_HANDLE;
+  return HANDLE.test(handle) ? handle : null;
+}
+
+/** Parses the reader model output, one `@handle | display name | text` per post. Drops malformed rows. */
 export function parseReaderLines(output: string): ReaderLine[] {
   const lines: ReaderLine[] = [];
-  for (const raw of output.split("\n")) {
-    const parts = raw.replace(/^\s*[-*•]\s*/, "").split("|");
-    if (parts.length < 3) continue;
-    const handle = parts[0].trim();
+  for (const row of readerRows(output)) {
+    const parts = row.split("|");
+    const handle = readerHandle(parts[0]);
     const displayName = parts[1].trim();
     const text = parts.slice(2).join("|").trim();
-    if (!HANDLE.test(handle) || text.length < 3 || tokenize(text).length === 0) continue;
+    if (!handle || text.length < 3 || tokenize(text).length === 0) continue;
     if (LIVE_ON_X_NAME.test(displayName) || LIVE_ON_X_TEXT.test(text)) continue;
-    lines.push({
-      handle: PLACEHOLDER_HANDLES.has(handle.toLowerCase()) ? UNKNOWN_HANDLE : handle,
-      displayName: PLACEHOLDER_NAMES.has(displayName.toLowerCase()) ? "" : displayName,
-      text,
-    });
+    lines.push({ handle, displayName: PLACEHOLDER_NAMES.has(displayName.toLowerCase()) ? "" : displayName, text });
   }
   return lines;
 }
@@ -114,6 +129,8 @@ const SAME_TEXT_MIN_CHARS = 40;
 /** For two lines under different handles. A short text can match another post's text by chance. */
 export const sameLongPost = (a: string, b: string) => Math.min(a.length, b.length) >= SAME_TEXT_MIN_CHARS && samePost(a, b);
 
+const sameWords = (a: string, b: string) => tokenize(a).join(" ") === tokenize(b).join(" ");
+
 function mostCommon(counts: Map<string, number>): string {
   let best = "";
   let bestCount = 0;
@@ -154,6 +171,7 @@ export function sameHandle(a: string, b: string): boolean {
  * slices of a scrolled post or thread, so the group keeps each distinct slice of text.
  * A line whose handle matches no group joins the group with the same post text, because the reader
  * sometimes writes the display name or a placeholder when the handle is out of frame.
+ * Unknown lines have no handle to tell them apart, so a short one joins an unknown group only with the same words and no other display name.
  */
 export function groupPosts(observations: Observation[]): PostGroup[] {
   interface Acc extends Omit<PostGroup, "text" | "slices"> {
@@ -166,7 +184,8 @@ export function groupPosts(observations: Observation[]): PostGroup[] {
     const norm = line.handle.toLowerCase();
     const known = line.handle !== UNKNOWN_HANDLE;
     let group = (known ? groups.find((g) => [...g.handles.keys()].some((h) => sameHandle(h.toLowerCase(), norm))) : undefined)
-      ?? groups.find((g) => g.texts.some((t) => sameLongPost(t, line.text)));
+      ?? groups.find((g) => g.texts.some((t) => sameLongPost(t, line.text)))
+      ?? (known ? undefined : groups.find((g) => g.handles.size === 0 && (!line.displayName || g.names.size === 0 || g.names.has(line.displayName)) && g.texts.some((t) => sameWords(t, line.text))));
     if (!group) {
       group = {
         handles: new Map(),

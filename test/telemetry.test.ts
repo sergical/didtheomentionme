@@ -36,7 +36,7 @@ describe("frame telemetry", () => {
     await client.close();
   });
 
-  test("records gemma's OpenAI-style answer on one span before it ends", async () => {
+  test("records the reader's OpenAI-style answer on one span before it ends", async () => {
     const options = sentryOptions({} as Parameters<typeof sentryOptions>[0]);
     const spans: ReturnType<typeof Sentry.spanToJSON>[] = [];
     const { initAndBind } = require("@sentry/core");
@@ -52,7 +52,7 @@ describe("frame telemetry", () => {
         };
       },
     });
-    const model = "@cf/google/gemma-4-26b-a4b-it";
+    const model = "@cf/qwen/qwen3.8-27b";
     await Sentry.startSpan({ name: "test" }, async () => {
       await Promise.all([390, 391].map((second) => {
         const inputs = { max_tokens: 1500, messages: [{ role: "user", content: [{ type: "text", text: `frame ${second}` }] }] };
@@ -73,7 +73,7 @@ describe("frame telemetry", () => {
     await client.close();
   });
 
-  test("replaces gemma data URLs with the exact frame URL", () => {
+  test("replaces reader data URLs with the exact frame URL", () => {
     const attrs = frameAttributes({ videoId: "Ka0p5tUUmgg", second: 390, size: "f1280" });
     const result = redactImages('{"url":"data:image/jpeg;base64,AAAA"}', attrs["app.frame.url"]);
     expect(JSON.parse(result).url).toBe(attrs["app.frame.url"]);

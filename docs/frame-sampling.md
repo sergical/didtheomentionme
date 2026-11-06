@@ -36,7 +36,7 @@ The existing gen_ai span gets these attributes, with no extra span:
 }
 ```
 
-Gemma records its image URL in the message attribute instead of base64. SDK 11.10.0 omits clef-flash images
+The reader records its image URL in the message attribute instead of base64. SDK 11.10.0 omits clef-flash images
 entirely and records evaluation state and questions. The local test runs the installed AI instrumentation
 and verifies two concurrent calls have distinct frame references and no image bytes.
 The origin is the current production Worker URL in `src/telemetry.ts`; change it if the app moves.

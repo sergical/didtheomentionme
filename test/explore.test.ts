@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Env } from "../src/env";
 import { exploreData, renderExplore, type ExploreSort } from "../src/explore";
+import { normalizeHandle } from "../src/pipeline";
 import { d1, migrated } from "./d1";
 
 let db: Database;
@@ -19,7 +20,7 @@ function mention(videoId: string, handle: string, firstSeen: number, lastSeen = 
   db.query(
     `INSERT INTO mentions (id, video_id, detector, handle, handle_norm, text, first_seen, last_seen, frame_second, read_aloud_at, quote)
      VALUES (?, ?, 'x', ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(nextId++, videoId, handle, handle.replace(/^@/, "").toLowerCase(), `post by ${handle}`, firstSeen, lastSeen, firstSeen, quote ? firstSeen : null, quote);
+  ).run(nextId++, videoId, handle, normalizeHandle(handle), `post by ${handle}`, firstSeen, lastSeen, firstSeen, quote ? firstSeen : null, quote);
 }
 
 const explore = (sort: ExploreSort = "newest") => exploreData({ DB: d1(db) } as unknown as Env, theo, [theo, prime], sort);
@@ -42,6 +43,14 @@ beforeEach(() => {
 });
 
 describe("exploreData", () => {
+  test("an unknown handle counts as a post but not as an account", async () => {
+    mention("new", "@unknown", 700);
+    const data = await explore();
+    expect(data.totals.shown).toBe(5);
+    expect(data.accounts.map((a) => a.handle)).toEqual(["@dev", "@ThePrimeagen"]);
+    expect(data.videos.find((v) => v.id === "new")!.accounts.map((a) => a.handle)).toEqual(["@dev"]);
+  });
+
   test("counts only done videos of the creator", async () => {
     const data = await explore();
     expect(data.totals).toEqual({ videos: 3, seconds: 3000, from: "2026-09-01", to: "2026-10-01", shown: 4, aloud: 1 });

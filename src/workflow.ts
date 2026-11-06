@@ -18,6 +18,8 @@ import {
   type PostGroup,
   type Run,
   type Word,
+  normalizeHandle,
+  UNKNOWN_HANDLE,
 } from "./pipeline";
 import { EXTRACT_EVENT, JOB_PROTOCOL, UPLOAD_HOST } from "./container";
 import { phase, sentryOptions, step as traceStep, waitForEvent, type PhaseStep } from "./telemetry";
@@ -31,7 +33,7 @@ const DETECT_CONCURRENCY = 10;
  */
 const DETECT_STEPS = 2;
 const READ_CONCURRENCY = 6;
-/** Most runs need 1 to 5 gemma calls, so 3 runs at a time keep gemma under its 300 calls a minute. */
+/** Most runs need 1 to 5 reader calls. Qwen answered 142 frames at 10 calls at a time with no error 3021. */
 const READ_RUNS = 3;
 const READ_ALOUD_CONCURRENCY = 4;
 const READ_ALOUD_SLICES = 3;
@@ -379,7 +381,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
                frame_second, read_aloud_p, read_aloud_at, quote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
-            videoId, m.detector, m.handle, m.handle.replace(/^@/, "").toLowerCase(), m.displayName, m.text,
+            videoId, m.detector, m.handle, normalizeHandle(m.handle), m.displayName, m.text,
             m.firstSeen, m.lastSeen, m.frameSecond, m.readAloudP, m.readAloudAt, m.quote,
           ),
       ),
@@ -408,7 +410,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     await db.prepare("DELETE FROM stale_vectors WHERE video_id = ?").bind(videoId).run();
     for (let i = 0; i < mentions.length; i += EMBED_BATCH) {
       const batch = mentions.slice(i, i + EMBED_BATCH);
-      const vectors = await embed(this.env, batch.map((m) => `${m.handle}: ${m.text}`));
+      const vectors = await embed(this.env, batch.map((m) => (m.handle === UNKNOWN_HANDLE ? m.text : `${m.handle}: ${m.text}`)));
       const records = batch.map((m, j) => ({
         id: `${videoId}:${m.id}`,
         values: vectors[j],

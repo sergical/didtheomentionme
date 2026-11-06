@@ -1,7 +1,7 @@
 import { logger, metrics } from "@sentry/cloudflare";
 import type { Detector, Post } from "./config";
 import type { Env } from "./env";
-import { MAX_POSTS_WITHOUT_CHAT_CHECK, parseReaderLines, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
+import { parseReaderLines, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
 import { chatSpan, transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
 
 // The AI binding types in workers-types do not list these models.
@@ -10,10 +10,10 @@ type AnyRun = { run(model: string, inputs: unknown): Promise<any> };
 const FLASH = "@cf/cloudflare/clef-flash";
 const CLEF = "@cf/cloudflare/clef";
 const CLAIRIC = "@cf/cloudflare/clairic";
-const GEMMA = "@cf/google/gemma-4-26b-a4b-it";
+const READER = "@cf/qwen/qwen3.8-27b";
 const EMBED = "@cf/baai/bge-m3";
-/** Most frames answer in under 10 s and a stuck call takes over a minute. A slow frame can reach 17 s, which costs one extra call. */
-const READ_HEDGE_MS = 15_000;
+/** On 142 sampled frames half answered in 3.5 s, 7 took over 20 s and the slowest 37 s. Each of those 7 costs one extra call. */
+const READ_HEDGE_MS = 20_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -48,7 +48,7 @@ export async function runModel(env: Env, model: string, inputs: unknown, attempt
 
 /**
  * Starts a second call when the first has not answered after `delayMs`, and returns the first answer. Workers AI
- * sometimes holds one gemma call for over a minute, while the same frame answers in seconds when sent again.
+ * sometimes holds one reader call for over a minute, while the same frame answers in seconds when sent again.
  * It fails when the second call fails, or when neither answers in 4 × `delayMs`, so the step can retry.
  */
 export function hedge<T>(model: string, delayMs: number, call: (abandoned: () => boolean) => Promise<T>): Promise<T> {
@@ -96,27 +96,31 @@ export function toBase64(bytes: ArrayBuffer): string {
   return btoa(binary);
 }
 
-async function askAboutFrame(env: Env, state: string, question: string, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
+async function askAboutFrame<Q extends string>(env: Env, state: string, questions: Record<Q, string>, jpeg: ArrayBuffer, frame: FrameReference): Promise<Record<Q, number>> {
+  const names = Object.keys(questions) as Q[];
   const result = await withFrameReference(frame, () => runModel(env, FLASH, {
     model: "clef-flash",
     state,
     images: [{ content_type: "image/jpeg", base64: toBase64(jpeg) }],
-    questions: { frame: { type: "noul", instructions: question } },
+    questions: Object.fromEntries(names.map((name) => [name, { type: "noul", instructions: questions[name] }])),
   }));
-  const p = result?.answers?.frame?.noul;
-  if (typeof p !== "number") throw new Error(`clef-flash returned no answer: ${JSON.stringify(result).slice(0, 200)}`);
-  return p;
+  return Object.fromEntries(names.map((name) => {
+    const p = result?.answers?.[name]?.noul;
+    if (typeof p !== "number") throw new Error(`clef-flash returned no answer: ${JSON.stringify(result).slice(0, 200)}`);
+    return [name, p];
+  })) as Record<Q, number>;
 }
 
 /** Probability that an X post (or whatever the detector looks for) is on screen. */
-export function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
-  return askAboutFrame(env, detector.frameState, detector.frameQuestion, jpeg, frame);
+export async function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
+  return (await askAboutFrame(env, detector.frameState, { frame: detector.frameQuestion }, jpeg, frame)).frame;
 }
 
 /** Raw reader output: one `@handle | display name | text` line per post. */
 async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
   const inputs = {
     max_tokens: 1500,
+    temperature: 0,
     chat_template_kwargs: { enable_thinking: false },
     messages: [
       {
@@ -129,19 +133,19 @@ async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame:
     ],
   };
   const result = await withFrameReference(frame, () =>
-    chatSpan(GEMMA, inputs, () => hedge(GEMMA, READ_HEDGE_MS, (abandoned) => runModel(env, GEMMA, inputs, 3, abandoned))),
+    chatSpan(READER, inputs, () => hedge(READER, READ_HEDGE_MS, (abandoned) => runModel(env, READER, inputs, 3, abandoned))),
   );
   const text = result?.choices?.[0]?.message?.content ?? result?.response;
-  if (typeof text !== "string") throw new Error(`gemma-4 returned no text: ${JSON.stringify(result).slice(0, 200)}`);
+  if (typeof text !== "string") throw new Error(`${READER} returned no text: ${JSON.stringify(result).slice(0, 200)}`);
   return text;
 }
 
-/** The reader lists stream chat despite its prompt, so a frame with many lines is checked before they count as posts. */
+/** The reader lists stream chat and other sites as X posts, so the full-size frame is checked first. */
 export async function readPosts(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<ReaderLine[]> {
-  const lines = parseReaderLines(await readFrame(env, detector, jpeg, frame));
-  if (lines.length <= MAX_POSTS_WITHOUT_CHAT_CHECK) return lines;
-  const chat = await askAboutFrame(env, detector.frameState, detector.chatQuestion, jpeg, frame);
-  return chat < detector.chatThreshold ? lines : [];
+  const { page, chat } = await askAboutFrame(env, detector.frameState, { page: detector.frameQuestion, chat: detector.chatQuestion }, jpeg, frame);
+  const result = page < detector.pageThreshold ? "not_x" : chat >= detector.chatThreshold ? "chat" : "read";
+  metrics.count("read.frames", 1, { attributes: { result } });
+  return result === "read" ? parseReaderLines(await readFrame(env, detector, jpeg, frame)) : [];
 }
 
 export async function readAloudProbability(env: Env, detector: Detector, post: Post, transcript: string): Promise<number> {

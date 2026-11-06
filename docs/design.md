@@ -11,7 +11,8 @@ The model choices come from experiments recorded in `experiments/` (one 41 min v
 | Stage | Model | Result in the experiment |
 |---|---|---|
 | Is an X post on screen? (every frame, 1 fps, 640 px) | `@cf/cloudflare/clef-flash` | 15/15 intervals, about $0.04 per 41 min |
-| Read handle, display name, text (1280 px) | `@cf/google/gemma-4-26b-a4b-it` | 32/34 handles exact |
+| Is it really an X post, and not stream chat? (each picked frame, 1280 px) | `@cf/cloudflare/clef-flash` | see `pageThreshold` and `chatThreshold` |
+| Read handle, display name, text (1280 px) | `@cf/qwen/qwen3.8-27b` | 45/49 handles exact on 33 hand-checked frames |
 | Did the speaker read this post aloud? | `@cf/cloudflare/clef` | yes ≥ 0.32, no ≤ 0.26 |
 | Where in the transcript? | `@cf/cloudflare/clairic` (`text` field span) | 11/11 within ~10 s |
 | Text search over on-screen posts | D1 FTS5 + Vectorize (`@cf/baai/bge-m3`) | — |
@@ -28,7 +29,7 @@ VideoWorkflow(videoId)
   2 transcript  only if no captions: Whisper on audio chunks → R2 words.json
   3 detect      clef-flash on kept 640 frames → inherited per-second probability
   4 runs        merge positive seconds into runs, pick 1 frame per 5 s + run end
-  5 read        gemma-4 on the picked 1280 frames → posts per run (deduped)
+  5 read        clef-flash, then qwen on the picked 1280 frames → posts per run (deduped)
   6 read-aloud  per post: clef on the transcript window; if yes, clairic span → timestamp + quote sentence
   7 store       D1 mentions + FTS rows, Vectorize vectors
   8 cleanup     delete non-image extraction data; expire temporary frames after three days
@@ -49,7 +50,10 @@ interface Detector {
   frameState: string;            // clef-flash `state`
   frameQuestion: string;         // clef-flash noul question
   frameThreshold: number;        // 0.75
-  readerPrompt: string;          // gemma-4 prompt, one line per item: "@handle | display name | text"
+  pageThreshold: number;         // 0.65, frameQuestion on the 1280 frame
+  chatQuestion: string;          // clef-flash noul question
+  chatThreshold: number;         // 0.5
+  readerPrompt: string;          // qwen prompt, one line per item: "@handle | display name | text"
   readAloudQuestion(post: Post): string;   // clef noul question
   readAloudThreshold: number;    // 0.3
   quoteInstructions(post: Post): string;   // clairic text-field instructions
@@ -144,9 +148,13 @@ whose latest workflow instance is missing or finished, so a failed workflow cann
   backoff. Return probabilities rounded to 3 decimals. Expand them to all video seconds by inheriting the previous kept value. Missing stored frames fail the step.
 - runs: seconds with p ≥ `frameThreshold`; join runs with gaps ≤ 3 s. Picks = every 5 s from the run start, plus the
   run end. Resolve each pick to its previous kept frame while preserving the requested second for observations.
-- read: one step per run; gemma-4 with `chat_template_kwargs: { enable_thinking: false }`, `max_tokens: 1500`.
-  Parse lines `@handle | display name | text`. Keep a line only if the handle matches `^@[A-Za-z0-9_]{1,15}$` and
-  the text has at least 3 characters. Within a run, make one group per handle: lowercase handles match if equal,
+- read: one step per run. For each pick, one clef-flash call asks `frameQuestion` and `chatQuestion` on the 1280 frame.
+  A frame under `pageThreshold` or at `chatThreshold` is dropped and the reader does not see it (`read.frames` counts each result).
+  Then qwen with `temperature: 0`, `chat_template_kwargs: { enable_thinking: false }`, `max_tokens: 1500`.
+  Parse rows `@handle | display name | text`; a line without the columns continues the row above it.
+  A placeholder or unreadable handle (`?`, `…`, a space) becomes `@unknown`, with an empty `handle_norm`: it keeps its text for text search,
+  but it is not an account, so handle search and the explore page never list it. Keep a row only if the handle matches
+  `^@[A-Za-z0-9_]{1,15}$` or is unknown, and the text has at least 3 characters. Within a run, make one group per handle: lowercase handles match if equal,
   if the shorter one has ≥ 8 characters and is a prefix of the other, or if the shorter one has ≥ 6 characters and
   edit distance ≤ 2 (reader misreads). In each group keep each distinct text slice (token Jaccard < 0.6 to the
   others; a similar longer slice replaces a shorter one), the most common handle spelling, the first and last second
@@ -247,5 +255,5 @@ Verification used Wrangler through portless, containers disabled, with remote D1
 
 The SDK creates each AI span. A `spanStart` hook adds `app.frame.key`, `app.frame.second`,
 `app.frame.url`, and `app.frame.youtube_url` from a call-local Sentry scope. Concurrent calls keep separate scopes.
-Gemma image data URLs become the frame URL in `gen_ai.input.messages`. In SDK 11.10.0, clef-flash records
+Reader image data URLs become the frame URL in `gen_ai.input.messages`. In SDK 11.10.0, clef-flash records
 only evaluation state and questions; its images never enter that attribute. No extra span is created.

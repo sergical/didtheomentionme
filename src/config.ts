@@ -1,3 +1,5 @@
+import { UNKNOWN_HANDLE } from "./pipeline";
+
 export interface Post {
   handle: string; // "@name"
   displayName: string;
@@ -24,6 +26,7 @@ export interface Detector {
   frameState: string;
   frameQuestion: string;
   frameThreshold: number;
+  pageThreshold: number;
   chatQuestion: string;
   chatThreshold: number;
   readerPrompt: string;
@@ -54,7 +57,7 @@ export const SOURCES: Source[] = [
   },
 ];
 
-const postRef = (post: Post) => `this X post by ${post.handle}: "${post.text}"`;
+const postRef = (post: Post) => `this X post${post.handle === UNKNOWN_HANDLE ? "" : ` by ${post.handle}`}: "${post.text}"`;
 
 export const DETECTORS: Detector[] = [
   {
@@ -65,12 +68,15 @@ export const DETECTORS: Detector[] = [
       "Is a post from X (Twitter) clearly visible and readable as main content of the screen (a post page, timeline, search results, embed or screenshot)? An X post shows an avatar, a display name, an @handle and the post text. Small sidebar items and avatars do not count. A live chat, a stream dashboard, an activity feed, or a YouTube page with no X post in its video does not count. An Instagram page does not count.",
     /** Real posts scored 0.82 or more on 61 sampled frames and in all 15 labelled intervals. Stream chat scored up to 0.61. Instagram pages scored up to 0.90 before their sentence and 0.40 or less after it. */
     frameThreshold: 0.75,
+    /** The same question on the 1280 px frame. Real posts scored 0.72 or more. Blogs, Instagram and an X profile with no post scored 0.08 to 0.61, and one blog 0.71. */
+    pageThreshold: 0.65,
     chatQuestion: "Is the main content of this frame a live stream chat panel (Twitch or YouTube chat) with many short messages from viewers?",
-    /** On 41 frames with 8 or more reader lines, a wall of real posts scored 0.06, a post page beside a chat 0.17, and the other 39 scored 0.80 or more. */
+    /** On 41 frames with 8 or more reader lines, a wall of real posts scored 0.06, a post page beside a chat 0.17, and the other 39 scored 0.80 or more. Other real frames scored 0.35 or less. */
     chatThreshold: 0.5,
     readerPrompt:
-      "This is a frame from a screen recording. Transcribe every X (Twitter) post visible on screen, including replies and quoted posts. Live stream chat is not X. " +
-      "Output one line per post: @handle | display name | post text. Copy characters exactly; write ? for anything unreadable. Output nothing else.",
+      "This is a frame from a screen recording. Transcribe every X (Twitter) post on screen, including replies and quoted posts. Posts shown as a screenshot or on a wall of posts count.\n" +
+      "Do not transcribe live stream chat (even chat on X), the Live on X panel, live stream titles, Relevant people, Who to follow, Trends or profile bios. If the screen shows another website or app, such as Instagram, a blog, docs, email, Discord or Twitch, and no X post, output NONE.\n" +
+      "Output one line per post: @handle | display name | post text. Copy characters exactly; write ? for anything unreadable. When a post's content is an image or screenshot of text, the post text is the text in that image. If the post's @handle is not visible on screen, write @unknown; never guess a handle from a name. If there are no X posts, output NONE. Output nothing else.",
     readAloudQuestion: (post) =>
       `This is a transcript of a tech streamer while ${postRef(post)} is on screen. Does the speaker read aloud, quote or paraphrase that post's content?`,
     readAloudThreshold: 0.3,

@@ -116,26 +116,35 @@ test("an abandoned model call is not sent again", async () => {
 describe("reading a frame", () => {
   const jpeg = new ArrayBuffer(1);
   const frame = { videoId: "v", second: 1, size: "f1280" } as const;
-  const read = (count: number, chat: number) => {
-    let asked = 0;
-    const content = Array.from({ length: count }, (_, i) => `@user${i} | User | message ${i}`).join("\n");
+  const read = (page: number, chat: number) => {
+    let reads = 0;
     const env = {
-      AI: { run: async (model: string) => (model.includes("flash") ? (asked++, { answers: { frame: { noul: chat } } }) : { choices: [{ message: { content } }] }) },
+      AI: {
+        run: async (model: string) => {
+          if (model.includes("flash")) return { answers: { page: { noul: page }, chat: { noul: chat } } };
+          reads++;
+          return { choices: [{ message: { content: "@alice | Alice | a real post" } }] };
+        },
+      },
     } as unknown as Env;
-    return { lines: readPosts(env, DETECTORS[0], jpeg, frame), asked: () => asked };
+    return { lines: readPosts(env, DETECTORS[0], jpeg, frame), reads: () => reads };
   };
 
-  test("a frame with few lines is not checked for chat", async () => {
-    const result = read(7, 0.9);
-    expect(await result.lines).toHaveLength(7);
-    expect(result.asked()).toBe(0);
+  test("a page with an X post and no chat is read", async () => {
+    const result = read(0.72, 0.35);
+    expect(await result.lines).toEqual([{ handle: "@alice", displayName: "Alice", text: "a real post" }]);
+    expect(result.reads()).toBe(1);
   });
 
-  test("a frame with many lines that shows a chat has no posts", async () => {
-    expect(await read(8, 0.9).lines).toEqual([]);
+  test("a page that is not X is not read", async () => {
+    const result = read(0.64, 0.1);
+    expect(await result.lines).toEqual([]);
+    expect(result.reads()).toBe(0);
   });
 
-  test("a frame with many lines that shows no chat keeps its posts", async () => {
-    expect(await read(9, 0.06).lines).toHaveLength(9);
+  test("a stream chat is not read", async () => {
+    const result = read(0.9, 0.5);
+    expect(await result.lines).toEqual([]);
+    expect(result.reads()).toBe(0);
   });
 });

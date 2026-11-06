@@ -16,6 +16,7 @@ import {
   quoteSpan,
   sameHandle,
   timeAtOffset,
+  wordRunSpan,
   wordsFromSegments,
 } from "../src/pipeline";
 import { parseTweetId, syndicationToken } from "../src/tweet";
@@ -322,6 +323,29 @@ describe("quoteSpan", () => {
 
   test("does not count punctuation as words", () => {
     expect(quoteSpan([0, 7], "— Jev —")).toBeNull();
+  });
+});
+
+describe("wordRunSpan", () => {
+  const transcript = "So GPT 62 Astra has made an appearance on Google Cloud today";
+
+  test("finds three post words in a row, ignoring case and punctuation", () => {
+    const [start, end] = wordRunSpan("GPT 6.2 Astra HAS made an appearance!", transcript)!;
+    expect(transcript.slice(start, end)).toBe("Astra has made");
+  });
+
+  test("finds a post of exactly three words", () => {
+    const [start, end] = wordRunSpan("Dario is right", "plus Elon saying Dario is right yeah")!;
+    expect("plus Elon saying Dario is right yeah".slice(start, end)).toBe("Dario is right");
+  });
+
+  test("matches a curly apostrophe in the post to a straight one in the transcript", () => {
+    expect(wordRunSpan("It’s very good", "It's very good")).toEqual([0, 9]);
+  });
+
+  test("returns null when words are not in a row or the post is too short", () => {
+    expect(wordRunSpan("Astra has never made", transcript)).toBeNull();
+    expect(wordRunSpan("Astra has", transcript)).toBeNull();
   });
 });
 

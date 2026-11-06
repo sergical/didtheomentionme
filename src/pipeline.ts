@@ -268,6 +268,24 @@ export function quoteSpan(span: unknown, transcript: string): [number, number] |
   return words.length < MIN_QUOTE_WORDS ? null : [start, end];
 }
 
+const WORD_RUN = 3;
+const WORD = /[\p{L}\p{N}]+/gu;
+
+/** The first place the transcript says three words in a row from the post. Clairic can answer "62" for a post the speaker reads in full. */
+export function wordRunSpan(post: string, transcript: string): [number, number] | null {
+  const postWords = post.toLowerCase().match(WORD) ?? [];
+  const runs = new Set(postWords.slice(WORD_RUN - 1).map((_, i) => postWords.slice(i, i + WORD_RUN).join(" ")));
+  const said = [...transcript.matchAll(WORD)];
+  for (let i = 0; i + WORD_RUN <= said.length; i++) {
+    const run = said.slice(i, i + WORD_RUN);
+    if (runs.has(run.map(([word]) => word.toLowerCase()).join(" "))) {
+      const last = run[WORD_RUN - 1];
+      return [run[0].index, last.index + last[0].length];
+    }
+  }
+  return null;
+}
+
 const isTerminator = (c: string | undefined) => c === "." || c === "?" || c === "!";
 
 /**

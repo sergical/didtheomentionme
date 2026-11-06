@@ -162,7 +162,7 @@ whose latest workflow instance is missing or finished, so a failed workflow cann
 - read-aloud: transcript window = words from run start - 30 s to run end + 30 s, joined with spaces, keeping the
   character offset of each word. clef `noul` with `readAloudQuestion` on each of the 3 longest
   slices; keep the highest p and its slice (a screenshot in a post can be longer than the post). If p ≥ `readAloudThreshold`, clairic
-  `text` field with `quoteInstructions`; a span under 3 words is no quote, so the post counts as not read; map `span[0]` to the word time (last word whose offset ≤ span start);
+  `text` field with `quoteInstructions`; a span under 3 words is no quote, so the first run of 3 post words in the transcript is used, and with no such run the post counts as not read; map `span[0]` to the word time (last word whose offset ≤ span start);
   the quote is the sentence of the window text that contains the span (expand to `.`, `?`, `!` or 120 chars).
 - store: in one batch, copy the old vector ids of the video to `stale_vectors`, delete its mentions, insert the new
   mentions and FTS rows (re-runs are idempotent). Then delete the `stale_vectors` ids from Vectorize and their rows.

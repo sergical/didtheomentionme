@@ -1,7 +1,7 @@
 import { logger, metrics } from "@sentry/cloudflare";
 import type { Detector, Post } from "./config";
 import type { Env } from "./env";
-import { parseReaderLines, quoteSpan, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
+import { parseReaderLines, quoteSpan, wordRunSpan, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
 import { chatSpan, transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
 
 // The AI binding types in workers-types do not list these models.
@@ -171,7 +171,7 @@ export async function findQuoteSpan(
     state: transcript,
     fields: { quote: { type: "text", instructions: detector.quoteInstructions(post) } },
   });
-  return quoteSpan(result?.answers?.quote?.span, transcript);
+  return quoteSpan(result?.answers?.quote?.span, transcript) ?? wordRunSpan(post.text, transcript);
 }
 
 /** Word timings for one audio chunk; `offsetSeconds` is the chunk start in the video. */

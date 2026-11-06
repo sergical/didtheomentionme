@@ -115,7 +115,7 @@ export interface Observation {
 export interface PostGroup {
   handle: string;
   displayName: string;
-  /** Every distinct slice of text read for this handle in the run, one per line. */
+  /** Every distinct slice of text read for this post in the run, one per line. */
   text: string;
   /** The same slices, longest first. A screenshot inside the post can be longer than the post itself. */
   slices: string[];
@@ -133,6 +133,25 @@ const SAME_TEXT_MIN_CHARS = 40;
 export const sameLongPost = (a: string, b: string) => Math.min(a.length, b.length) >= SAME_TEXT_MIN_CHARS && samePost(a, b);
 
 const sameWords = (a: string, b: string) => tokenize(a).join(" ") === tokenize(b).join(" ");
+
+const SHARED_RUN_WORDS = 5;
+const MIN_RUN_WORDS = 3;
+
+/**
+ * True when the longer text starts with the shorter one, which can end mid-word when the frame caught it being
+ * scrolled or cut off, or has its run of 5 words, or all its words when it has 3 or 4.
+ */
+function sharesWordRun(a: string, b: string): boolean {
+  const [shorter, longer] = [tokenize(a), tokenize(b)].sort((x, y) => x.length - y.length);
+  if (longer.join(" ").startsWith(shorter.join(" "))) return true;
+  if (shorter.length < MIN_RUN_WORDS) return false;
+  const size = Math.min(shorter.length, SHARED_RUN_WORDS);
+  const text = ` ${longer.join(" ")} `;
+  return shorter.slice(0, shorter.length - size + 1).some((_, i) => text.includes(` ${shorter.slice(i, i + size).join(" ")} `));
+}
+
+/** For two lines under one handle. Frames of a scrolled post can share few words overall, but they share a run of them. */
+const sameScrolledPost = (a: string, b: string) => jaccard(a, b) >= JACCARD_SAME_POST || sameLongPost(a, b) || sharesWordRun(a, b);
 
 function mostCommon(counts: Map<string, number>): string {
   let best = "";
@@ -169,11 +188,59 @@ export function sameHandle(a: string, b: string): boolean {
   return shorter >= 6 && levenshtein(a, b) <= 2;
 }
 
+export interface HandleCount {
+  handle: string;
+  names: Set<string>;
+  count: number;
+}
+
+/** One entry per handle, ignoring case, with its most common spelling. */
+export function countHandles(rows: { handle: string; displayName: string }[]): HandleCount[] {
+  const seen = new Map<string, { spellings: Map<string, number>; names: Set<string>; count: number }>();
+  for (const { handle, displayName } of rows) {
+    if (handle === UNKNOWN_HANDLE) continue;
+    const norm = handle.toLowerCase();
+    const entry = seen.get(norm) ?? { spellings: new Map(), names: new Set(), count: 0 };
+    bump(entry.spellings, handle);
+    if (displayName) entry.names.add(displayName);
+    entry.count++;
+    seen.set(norm, entry);
+  }
+  return [...seen.values()].map(({ spellings, names, count }) => ({ handle: mostCommon(spellings), names, count }));
+}
+
+const CANONICAL_MIN_RATIO = 2;
+
 /**
- * Groups reader lines of one run into one post group per handle. Frames 5 s apart show different
- * slices of a scrolled post or thread, so the group keeps each distinct slice of text.
+ * Maps a misread handle (lowercase) to a near handle with the same display name that is seen far more often.
+ * Near handles with different display names are different people (opencode and odincode).
+ * A misread with no correct spelling in the catalog stays as it is.
+ */
+export function canonicalHandles(seen: HandleCount[]): Map<string, string> {
+  const canonical = new Map<string, string>();
+  const byCount = [...seen].sort((a, b) => b.count - a.count);
+  for (const variant of byCount) {
+    const norm = variant.handle.toLowerCase();
+    const top = byCount.find((c) =>
+      c.count >= CANONICAL_MIN_RATIO * variant.count && sameHandle(c.handle.toLowerCase(), norm) && [...variant.names].some((name) => c.names.has(name)),
+    );
+    if (top) canonical.set(norm, canonical.get(top.handle.toLowerCase()) ?? top.handle);
+  }
+  return canonical;
+}
+
+export const withCanonicalHandle = <T extends { handle: string }>(post: T, canonical: Map<string, string>): T => ({
+  ...post,
+  handle: canonical.get(post.handle.toLowerCase()) ?? post.handle,
+});
+
+/**
+ * Groups reader lines of one run into one group per post. Frames 5 s apart show different slices
+ * of a scrolled post, so the group keeps each distinct slice of text. Two posts by one author with
+ * no words in common are two groups, each with its own times.
  * A line whose handle matches no group joins the group with the same post text, because the reader
  * sometimes writes the display name or a placeholder when the handle is out of frame.
+ * A near handle under another display name is another person, so it stays apart.
  * Unknown lines have no handle to tell them apart, so a short one joins an unknown group only with the same words and no other display name.
  */
 export function groupPosts(observations: Observation[]): PostGroup[] {
@@ -186,9 +253,11 @@ export function groupPosts(observations: Observation[]): PostGroup[] {
   for (const { second, line } of [...observations].sort((a, b) => a.second - b.second)) {
     const norm = line.handle.toLowerCase();
     const known = line.handle !== UNKNOWN_HANDLE;
-    let group = (known ? groups.find((g) => [...g.handles.keys()].some((h) => sameHandle(h.toLowerCase(), norm))) : undefined)
+    const nameFits = (g: Acc) => !line.displayName || g.names.size === 0 || g.names.has(line.displayName);
+    const sameAuthor = (g: Acc) => [...g.handles.keys()].some((h) => h.toLowerCase() === norm || (sameHandle(h.toLowerCase(), norm) && nameFits(g)));
+    let group = (known ? groups.find((g) => sameAuthor(g) && g.texts.some((t) => sameScrolledPost(t, line.text))) : undefined)
       ?? groups.find((g) => g.texts.some((t) => sameLongPost(t, line.text)))
-      ?? (known ? undefined : groups.find((g) => g.handles.size === 0 && (!line.displayName || g.names.size === 0 || g.names.has(line.displayName)) && g.texts.some((t) => sameWords(t, line.text))));
+      ?? (known ? undefined : groups.find((g) => g.handles.size === 0 && nameFits(g) && g.texts.some((t) => sameWords(t, line.text))));
     if (!group) {
       group = {
         handles: new Map(),

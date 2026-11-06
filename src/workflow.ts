@@ -6,6 +6,8 @@ import { MIN_DURATION_SECONDS, getDetector, getSource, type Detector } from "./c
 import type { Env, VideoParams } from "./env";
 import {
   buildWindow,
+  canonicalHandles,
+  countHandles,
   frameSeconds,
   frameTimeline,
   inheritProbabilities,
@@ -20,6 +22,7 @@ import {
   type Word,
   normalizeHandle,
   UNKNOWN_HANDLE,
+  withCanonicalHandle,
 } from "./pipeline";
 import { EXTRACT_EVENT, JOB_PROTOCOL, UPLOAD_HOST } from "./container";
 import { frameAttributes, phase, sentryOptions, step as traceStep, waitForEvent, type PhaseStep } from "./telemetry";
@@ -299,7 +302,14 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       const lines = await readPosts(env, detector, await frame.arrayBuffer(), { videoId, second: timeline[second], size: "f1920" });
       for (const line of lines) observations.push({ second, line });
     });
-    return groupPosts(observations).map((post) => ({ ...post, frameSecond: timeline[post.frameSecond] }));
+    const canonical = canonicalHandles(countHandles(await this.catalogHandles(videoId)));
+    return groupPosts(observations).map((post) => withCanonicalHandle({ ...post, frameSecond: timeline[post.frameSecond] }, canonical));
+  }
+
+  /** Leaves out `videoId`, so a rerun or a retried store does not count that video's own rows twice. */
+  private async catalogHandles(videoId: string): Promise<{ handle: string; displayName: string }[]> {
+    const { results } = await this.env.DB.prepare("SELECT handle, display_name AS displayName FROM mentions WHERE handle_norm != '' AND video_id != ?").bind(videoId).all<{ handle: string; displayName: string }>();
+    return results;
   }
 
   private async loadWords(videoId: string): Promise<Word[]> {
@@ -389,8 +399,11 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
    * Replaces all mentions of the video in one batch, so a retried step starts clean. The batch also queues
    * the old vectors in `stale_vectors`, which `storeVectors` drains, so a retry cannot lose them.
    */
-  private async storeMentions(videoId: string, mentions: Mention[]) {
+  private async storeMentions(videoId: string, found: Mention[]) {
     const db = this.env.DB;
+    // Runs are read apart, so only here can all of a video's spellings of a new handle count together.
+    const canonical = canonicalHandles(countHandles([...(await this.catalogHandles(videoId)), ...found]));
+    const mentions = found.map((m) => withCanonicalHandle(m, canonical));
     await db.batch([
       db
         .prepare("INSERT OR IGNORE INTO stale_vectors (vector_id, video_id) SELECT video_id || ':' || id, video_id FROM mentions WHERE video_id = ?")

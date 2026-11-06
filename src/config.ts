@@ -29,6 +29,7 @@ export interface Detector {
   pageThreshold: number;
   chatQuestion: string;
   chatThreshold: number;
+  sourceQuestion: string;
   readerPrompt: string;
   readAloudQuestion(post: Post): string;
   readAloudThreshold: number;
@@ -75,6 +76,15 @@ export const DETECTORS: Detector[] = [
     chatQuestion: "Is the main content of this frame a live stream chat panel (Twitch or YouTube chat) with many short messages from viewers?",
     /** On 41 frames with 8 or more reader lines, a wall of real posts scored 0.06, a post page beside a chat 0.17, and the other 39 scored 0.80 or more. Other real frames scored 0.35 or less, and chat on X 0.49. */
     chatThreshold: 0.45,
+    /**
+     * Asked apart from the reader, because the reader copied Discord, Slack and GitHub text even when told not to (17 of 18 frames).
+     * Of the 652 stored frames this rejected 27: 21 were not posts, 5 were and 1 showed both. The page check cannot do this: Discord scored up to 0.87 and real posts down to 0.52.
+     */
+    sourceQuestion:
+      "This is a frame from a screen recording. Look at the main content of the screen and the interface around it. Which one is it? Answer with one word only.\n" +
+      "X: one or more posts from X (Twitter), with reply, repost and like counts or the X sidebar, or a screenshot, embed or wall of such posts, even inside another page or inside a video on YouTube.\n" +
+      "CHAT: messages in Discord, Slack or a similar chat, with plain usernames and dates and no @handle.\n" +
+      "OTHER: anything else, such as GitHub, an article, a blog, a news site, search results, Instagram, a YouTube page with no X post, or an empty screen.",
     readerPrompt:
       "This is a frame from a screen recording. Transcribe every X (Twitter) post on screen, including replies and quoted posts. Posts shown as a screenshot or on a wall of posts count.\n" +
       "Do not transcribe live stream chat (even chat on X), the Live on X panel, live stream titles, Relevant people, Who to follow, Trends or profile bios. If the screen shows another website or app, such as Instagram, a blog, docs, email, Discord or Twitch, and no X post, output NONE.\n" +

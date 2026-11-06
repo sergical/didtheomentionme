@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { embed, embedRequests, hedge, readPosts, retryDelayMs, runModel } from "../src/ai";
+import { embed, embedRequests, findQuote, hedge, readPosts, retryDelayMs, runModel } from "../src/ai";
 import { DETECTORS } from "../src/config";
 import type { Env } from "../src/env";
 
@@ -146,5 +146,52 @@ describe("reading a frame", () => {
     const result = read(0.9, 0.5);
     expect(await result.lines).toEqual([]);
     expect(result.reads()).toBe(0);
+  });
+});
+
+describe("findQuote", () => {
+  const detector = DETECTORS[0];
+  const post = { handle: "@trq212", displayName: "Thariq", text: "Claude Code now reads AGENTS.md files" };
+  const ask = (span: [number, number] | null) => {
+    const questions: string[] = [];
+    const env = {
+      AI: {
+        run: async (_model: string, { fields }: { fields: { quote: { instructions: string } } }) => {
+          questions.push(fields.quote.instructions);
+          return { answers: { quote: { span } } };
+        },
+      },
+    } as unknown as Env;
+    return { env, questions };
+  };
+  const readTranscript = "okay so claude code now reads agents md files which is great for everyone here";
+  const ownWordsTranscript = "also of note is that the latest update will use your agent file if you have one";
+
+  test("post words in the transcript ask for the reading", async () => {
+    const { env, questions } = ask([8, 40]);
+    const question = detector.quoteInstructions(post);
+    expect(await findQuote(env, detector, post, readTranscript)).toEqual({ question, answer: readTranscript.slice(8, 40), span: [8, 40], how: "read" });
+    expect(questions).toEqual([question]);
+  });
+
+  test("no post words in the transcript ask for the same point in other words", async () => {
+    const { env, questions } = ask([0, 40]);
+    const question = detector.ownWordsInstructions(post);
+    expect(await findQuote(env, detector, post, ownWordsTranscript)).toEqual({ question, answer: ownWordsTranscript.slice(0, 40), span: [0, 40], how: "own_words" });
+    expect(questions).toEqual([question]);
+  });
+
+  test("a one-word answer falls back to the post words in the transcript", async () => {
+    const { env } = ask([8, 14]);
+    const search = await findQuote(env, detector, post, readTranscript);
+    expect(search.how).toBe("word_run");
+    expect(search.answer).toBe("claude");
+    expect(readTranscript.slice(...search.span!)).toContain("claude code now");
+  });
+
+  test("no answer and no post words is no quote", async () => {
+    const { env } = ask(null);
+    const search = await findQuote(env, detector, post, ownWordsTranscript);
+    expect(search).toMatchObject({ answer: null, span: null, how: null });
   });
 });

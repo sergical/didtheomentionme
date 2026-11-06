@@ -67,7 +67,7 @@ export const sentryOptions = (env: Env): Sentry.CloudflareOptions => ({
 });
 
 /** A named span, so a lookup or cron trace reads like the code runs. */
-export const step = <T>(name: string, fn: () => Promise<T>, attributes?: Record<string, string | number | boolean>) =>
+export const step = <T>(name: string, fn: (span: Sentry.Span) => Promise<T>, attributes?: Record<string, string | number | boolean>) =>
   Sentry.startSpan({ name, op: "function", attributes }, fn);
 
 /** The steps inside a phase. Each one passes a config, so `do` needs only that overload. */

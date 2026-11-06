@@ -159,19 +159,32 @@ export async function readAloudProbability(env: Env, detector: Detector, post: P
   return p;
 }
 
-/** Character span of the words in the transcript where the speaker reads the post, or null. */
-export async function findQuoteSpan(
-  env: Env,
-  detector: Detector,
-  post: Post,
-  transcript: string,
-): Promise<[number, number] | null> {
+/** `question` and `answer` are what Clairic was asked and said, which a trace needs when the app does not use the answer. */
+export type QuoteSearch = {
+  question: string;
+  answer: string | null;
+  span: [number, number] | null;
+  how: "read" | "word_run" | "own_words" | null;
+};
+
+/**
+ * Where in the transcript the speaker says the post. Asked for a word-for-word reading of a post the speaker puts in
+ * their own words, Clairic still picks a sentence, often an unrelated one, so the question depends on whether the
+ * post's words are in the transcript.
+ */
+export async function findQuote(env: Env, detector: Detector, post: Post, transcript: string): Promise<QuoteSearch> {
+  const run = wordRunSpan(post.text, transcript);
+  const question = run ? detector.quoteInstructions(post) : detector.ownWordsInstructions(post);
   const result = await runModel(env, CLAIRIC, {
     model: "clairic",
     state: transcript,
-    fields: { quote: { type: "text", instructions: detector.quoteInstructions(post) } },
+    fields: { quote: { type: "text", instructions: question } },
   });
-  return quoteSpan(result?.answers?.quote?.span, transcript) ?? wordRunSpan(post.text, transcript);
+  const raw = result?.answers?.quote?.span;
+  const answer = Array.isArray(raw) ? transcript.slice(raw[0], raw[1]) : null;
+  const span = quoteSpan(raw, transcript);
+  if (span) return { question, answer, span, how: run ? "read" : "own_words" };
+  return { question, answer, span: run, how: run && "word_run" };
 }
 
 /** Word timings for one audio chunk; `offsetSeconds` is the chunk start in the video. */

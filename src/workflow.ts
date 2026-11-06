@@ -1,7 +1,7 @@
 import { captureException, captureMessage, getActiveSpan, instrumentWorkflowWithSentry, logger, metrics } from "@sentry/cloudflare";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import { detectFrame, embed, findQuoteSpan, pool, readAloudProbability, readPosts, transcribe } from "./ai";
+import { detectFrame, embed, findQuote, pool, readAloudProbability, readPosts, transcribe, type QuoteSearch } from "./ai";
 import { MIN_DURATION_SECONDS, getDetector, getSource, type Detector } from "./config";
 import type { Env, VideoParams } from "./env";
 import {
@@ -22,7 +22,7 @@ import {
   UNKNOWN_HANDLE,
 } from "./pipeline";
 import { EXTRACT_EVENT, JOB_PROTOCOL, UPLOAD_HOST } from "./container";
-import { phase, sentryOptions, step as traceStep, waitForEvent, type PhaseStep } from "./telemetry";
+import { frameAttributes, phase, sentryOptions, step as traceStep, waitForEvent, type PhaseStep } from "./telemetry";
 import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun, watchContainerJob } from "./videos";
 
 const DETECT_BATCH = 120;
@@ -76,6 +76,8 @@ type Mention = PostGroup & {
   readAloudAt: number | null;
   quote: string | null;
 };
+
+type ReadAloudResult = "read" | "not_read" | "no_quote" | "no_transcript";
 
 const key = (videoId: string, path: string) => `videos/${videoId}/${path}`;
 const transcriptKey = (videoId: string) => `transcripts/${videoId}.json`;
@@ -319,7 +321,6 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
   }
 
   private async readAloud(videoId: string, detector: Detector, posts: PostGroup[]): Promise<Mention[]> {
-    const env = this.env;
     const words = await this.loadWords(videoId);
     const mentions: Mention[] = posts.map((p) => ({ ...p, detector: detector.id, readAloudP: null, readAloudAt: null, quote: null }));
     if (words.length === 0) {
@@ -327,27 +328,29 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       return mentions;
     }
 
-    const results = new Map<Mention, "read" | "not_read" | "no_quote" | "no_transcript">();
-    await pool(mentions, READ_ALOUD_CONCURRENCY, async (mention) => {
-      // A run can hold many posts, and the talk about the post before or after this one is not a reading of it.
-      const window = buildWindow(words, mention.firstSeen - WINDOW_PADDING_SECONDS, mention.lastSeen + WINDOW_PADDING_SECONDS);
-      if (!window.text) return void results.set(mention, "no_transcript");
-      let post = { handle: mention.handle, displayName: mention.displayName, text: mention.slices[0] };
-      let p = 0;
-      for (const text of mention.slices.slice(0, READ_ALOUD_SLICES)) {
-        const candidate = { ...post, text };
-        const q = await readAloudProbability(env, detector, candidate, window.text);
-        if (q > p) [p, post] = [q, candidate];
-      }
-      mention.readAloudP = Math.round(p * 1000) / 1000;
-      results.set(mention, "not_read");
-      if (p < detector.readAloudThreshold) return;
-      const span = await findQuoteSpan(env, detector, post, window.text);
-      results.set(mention, span ? "read" : "no_quote");
-      if (!span) return;
-      mention.readAloudAt = Math.floor(timeAtOffset(window.offsets, span[0]) ?? mention.firstSeen);
-      mention.quote = expandSentence(window.text, span[0], span[1]);
-    });
+    const results = new Map<Mention, ReadAloudResult>();
+    await pool(mentions, READ_ALOUD_CONCURRENCY, (mention) =>
+      traceStep(`read aloud ${mention.handle}`, async (span) => {
+        const { result, text, search } = await this.checkReadAloud(detector, mention, words);
+        results.set(mention, result);
+        span.setAttributes({
+          "app.post.text": text,
+          "read_aloud.result": result,
+          "read_aloud.how": search?.how ?? undefined,
+          "read_aloud.question": search?.question,
+          "read_aloud.clairic_answer": search?.answer ?? undefined,
+          "read_aloud.p": mention.readAloudP ?? undefined,
+          "read_aloud.at": mention.readAloudAt ?? undefined,
+          "read_aloud.quote": mention.quote ?? undefined,
+          "read_aloud.youtube_url": mention.readAloudAt === null ? undefined : `https://www.youtube.com/watch?v=${videoId}&t=${mention.readAloudAt}s`,
+        });
+      }, {
+        "app.post.handle": mention.handle,
+        "app.post.first_seen": mention.firstSeen,
+        "app.post.last_seen": mention.lastSeen,
+        ...frameAttributes({ videoId, second: mention.frameSecond, size: "f1920" }),
+      }),
+    );
     // After the pool, so a failed check that retries the step cannot count the others twice.
     for (const [mention, result] of results) {
       metrics.count("read_aloud.checks", 1, { attributes: { "app.detector": detector.id, "read_aloud.result": result } });
@@ -360,6 +363,26 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       }
     }
     return mentions;
+  }
+
+  private async checkReadAloud(detector: Detector, mention: Mention, words: Word[]): Promise<{ result: ReadAloudResult; text: string; search?: QuoteSearch }> {
+    // A run can hold many posts, and the talk about the post before or after this one is not a reading of it.
+    const window = buildWindow(words, mention.firstSeen - WINDOW_PADDING_SECONDS, mention.lastSeen + WINDOW_PADDING_SECONDS);
+    if (!window.text) return { result: "no_transcript", text: mention.slices[0] };
+    let post = { handle: mention.handle, displayName: mention.displayName, text: mention.slices[0] };
+    let p = 0;
+    for (const text of mention.slices.slice(0, READ_ALOUD_SLICES)) {
+      const candidate = { ...post, text };
+      const q = await readAloudProbability(this.env, detector, candidate, window.text);
+      if (q > p) [p, post] = [q, candidate];
+    }
+    mention.readAloudP = Math.round(p * 1000) / 1000;
+    if (p < detector.readAloudThreshold) return { result: "not_read", text: post.text };
+    const search = await findQuote(this.env, detector, post, window.text);
+    if (!search.span) return { result: "no_quote", text: post.text, search };
+    mention.readAloudAt = Math.floor(timeAtOffset(window.offsets, search.span[0]) ?? mention.firstSeen);
+    mention.quote = expandSentence(window.text, search.span[0], search.span[1]);
+    return { result: "read", text: post.text, search };
   }
 
   /**

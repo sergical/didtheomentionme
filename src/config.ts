@@ -33,6 +33,7 @@ export interface Detector {
   readAloudQuestion(post: Post): string;
   readAloudThreshold: number;
   quoteInstructions(post: Post): string;
+  ownWordsInstructions(post: Post): string;
 }
 
 export const SOURCES: Source[] = [
@@ -87,6 +88,8 @@ export const DETECTORS: Detector[] = [
      */
     quoteInstructions: (post) =>
       `The complete sentence or sentences where the speaker starts reading ${postName(post)} word for word: "${post.text}". Copy at least ten words. Do not return a single name. Null if the speaker does not read it.`,
+    ownWordsInstructions: (post) =>
+      `The complete sentence where the speaker says the same thing as ${postName(post)}, using different words: "${post.text}". Copy at least ten words. Do not return a single name. Null if the speaker does not say it.`,
   },
 ];
 

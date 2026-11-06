@@ -115,7 +115,7 @@ test("an abandoned model call is not sent again", async () => {
 
 describe("reading a frame", () => {
   const jpeg = new ArrayBuffer(1);
-  const frame = { videoId: "v", second: 1, size: "f1280" } as const;
+  const frame = { videoId: "v", second: 1, size: "f1920" } as const;
   const read = (page: number, chat: number) => {
     let reads = 0;
     const env = {

@@ -15,7 +15,7 @@ export const EXTRACT_EVENT = "extract-done";
  * The /jobs contract version, equal to `JOB_PROTOCOL` in container/server.py. A rollout replaces containers over
  * minutes, so a job can start on the image before it.
  */
-export const JOB_PROTOCOL = 2;
+export const JOB_PROTOCOL = 3;
 const WATCHER_KEY = "job-watcher";
 
 async function putObject(request: Request, env: Env): Promise<Response> {

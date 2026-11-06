@@ -56,7 +56,7 @@ describe("frame telemetry", () => {
     await Sentry.startSpan({ name: "test" }, async () => {
       await Promise.all([390, 391].map((second) => {
         const inputs = { max_tokens: 1500, messages: [{ role: "user", content: [{ type: "text", text: `frame ${second}` }] }] };
-        return withFrameReference({ videoId: "Ka0p5tUUmgg", second, size: "f1280" }, () => chatSpan(model, inputs, () => ai.run(model, inputs)));
+        return withFrameReference({ videoId: "Ka0p5tUUmgg", second, size: "f1920" }, () => chatSpan(model, inputs, () => ai.run(model, inputs)));
       }));
     });
     const models = spans.filter((span) => span.attributes["gen_ai.request.model"]);
@@ -74,7 +74,7 @@ describe("frame telemetry", () => {
   });
 
   test("replaces reader data URLs with the exact frame URL", () => {
-    const attrs = frameAttributes({ videoId: "Ka0p5tUUmgg", second: 390, size: "f1280" });
+    const attrs = frameAttributes({ videoId: "Ka0p5tUUmgg", second: 390, size: "f1920" });
     const result = redactImages('{"url":"data:image/jpeg;base64,AAAA"}', attrs["app.frame.url"]);
     expect(JSON.parse(result).url).toBe(attrs["app.frame.url"]);
     expect(attrs["app.frame.youtube_url"]).toEndWith("&t=390s");
@@ -87,7 +87,7 @@ test("retention expires temporary images and preserves mention images", () => {
   const old = new Date(now - 3 * 86400000);
   expect(isExpiredFrame("videos/id/f640/390.jpg", old, now)).toBe(true);
   expect(isExpiredFrame("videos/id/f640/390.jpg", new Date(old.getTime() + 1), now)).toBe(false);
-  expect(isExpiredFrame("videos/id/f1280/390.jpg", old, now)).toBe(true);
-  expect(isExpiredFrame("videos/id/f1280/390.jpg", old, now, new Set(["videos/id/f1280/390.jpg"]))).toBe(false);
+  expect(isExpiredFrame("videos/id/f1920/390.jpg", old, now)).toBe(true);
+  expect(isExpiredFrame("videos/id/f1920/390.jpg", old, now, new Set(["videos/id/f1920/390.jpg"]))).toBe(false);
   expect(isExpiredFrame("videos/id/manifest.json", old, now)).toBe(false);
 });

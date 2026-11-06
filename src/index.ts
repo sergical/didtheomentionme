@@ -6,7 +6,7 @@ import { LookupError, coverage, lookup } from "./lookup";
 import { renderPage } from "./page";
 import { exploreData, renderExplore } from "./explore";
 import { socialImage } from "./social";
-import { expireFrames } from "./retention";
+import { expireFrames, largeFrame } from "./retention";
 import { sentryOptions, step } from "./telemetry";
 import { backfill, destroyContainer, discoverRss, processNow, startPending } from "./videos";
 
@@ -16,8 +16,8 @@ export { VideoWorkflow } from "./workflow";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-async function frame(env: Env, videoId: string, second: string, size: "f640" | "f1280" = "f1280"): Promise<Response> {
-  const object = await env.BUCKET.get(`videos/${videoId}/${size}/${second}.jpg`);
+async function frame(env: Env, videoId: string, second: string, size: "f640" | "f1920" = "f1920"): Promise<Response> {
+  const object = size === "f640" ? await env.BUCKET.get(`videos/${videoId}/f640/${second}.jpg`) : await largeFrame(env.BUCKET, videoId, second);
   if (!object) return new Response("not found", { status: 404 });
   return new Response(object.body, {
     headers: {
@@ -113,7 +113,7 @@ export default withSentry(sentryOptions, {
     if (["/og.png", "/favicon.svg", "/apple-touch-icon.png"].includes(pathname)) return socialImage(env, url, ctx);
 
     const frameMatch = pathname.match(/^\/frame\/([A-Za-z0-9_-]+)\/(\d+)\.jpg$/);
-    if (frameMatch) return frame(env, frameMatch[1], frameMatch[2], url.searchParams.get("size") === "640" ? "f640" : "f1280");
+    if (frameMatch) return frame(env, frameMatch[1], frameMatch[2], url.searchParams.get("size") === "640" ? "f640" : "f1920");
     if (pathname === "/" || pathname === "/api/lookup") return lookupRoutes(env, url);
     if (pathname === "/explore") return exploreRoute(env, url);
     return new Response("not found", { status: 404 });

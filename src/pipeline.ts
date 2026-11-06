@@ -35,12 +35,14 @@ const HANDLE = /^@[A-Za-z0-9_]{1,15}$/;
 /** A post whose handle is not on screen or cannot be read. It is not an account. */
 export const UNKNOWN_HANDLE = "@unknown";
 const PLACEHOLDER_HANDLES = new Set(["@handle", "@unknown", "@username", "@user"]);
-const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown"]);
+const PLACEHOLDER_NAMES = new Set(["display name", "?", "unknown", "post"]);
 /** The reader writes ? for characters it cannot read, copies the … of a cropped handle, and puts an @ on a display name (`@Pipkin Pippa`). */
 const UNREADABLE_HANDLE = /^\?*$|^@.*(\s|\?|…|\.\.\.$)/;
 /** The Live on X side panel shows "<name> is hosting <stream title>", which the reader copies as a post. */
 const LIVE_ON_X_NAME = /\bis hosting$/;
 const LIVE_ON_X_TEXT = /^is hosting\b/;
+/** Without a handle, only a text search can find a post. Of 55 unknown rows in 3 videos, 46 were shorter than this: browser tab titles, stream cards, bios and fragments, and a few short replies such as "Soon!". */
+const UNKNOWN_MIN_CHARS = 60;
 
 /** The value of `mentions.handle_norm`. It is empty for an unknown handle, so no handle search can match it. */
 export const normalizeHandle = (handle: string) => (handle === UNKNOWN_HANDLE ? "" : handle.replace(/^@/, "").toLowerCase());
@@ -73,6 +75,7 @@ export function parseReaderLines(output: string): ReaderLine[] {
     const text = parts.slice(2).join("|").trim();
     if (!handle || text.length < 3 || tokenize(text).length === 0) continue;
     if (LIVE_ON_X_NAME.test(displayName) || LIVE_ON_X_TEXT.test(text)) continue;
+    if (handle === UNKNOWN_HANDLE && text.length < UNKNOWN_MIN_CHARS) continue;
     lines.push({ handle, displayName: PLACEHOLDER_NAMES.has(displayName.toLowerCase()) ? "" : displayName, text });
   }
   return lines;
@@ -118,7 +121,7 @@ export interface PostGroup {
   slices: string[];
   firstSeen: number;
   lastSeen: number;
-  /** Second of the 1280 px frame where the post was first read. */
+  /** Second of the 1920 px frame where the post was first read. */
   frameSecond: number;
 }
 

@@ -15,11 +15,11 @@ The worker still accepts a sparse frame list, so a future detector can skip seco
 `frames` counts all one-second samples. `keptSeconds` contains the stored seconds.
 Missing `keptSeconds` means the legacy dense layout. Each skipped second inherits the probability
 of its previous kept frame, including the last seconds of the video. Runs and read picks use real video seconds.
-Read picks resolve to the previous stored f1280 image; observations retain the requested second,
+Read picks resolve to the previous stored f1920 image; observations retain the requested second,
 while mention `frameSecond` identifies the actual stored image.
 Both image sizes upload only kept seconds. Missing expected frames fail rather than silently creating negative detections.
 
-Further f1280 upload savings require a second container phase after detection: keep the download or extracted images
+Further f1920 upload savings require a second container phase after detection: keep the download or extracted images
 in the container, request only the read picks, then release it. The current workflow releases the container before detection.
 This needs a separate design for container restarts and workflow retries.
 
@@ -43,9 +43,9 @@ The origin is the current production Worker URL in `src/telemetry.ts`; change it
 
 ## Retention and cost
 
-No bucket setting or deployment was changed. Code keeps f640 and f1280 images after workflow cleanup.
+No bucket setting or deployment was changed. Code keeps f640 and f1920 images after workflow cleanup.
 The existing ten-minute cron runs a sweep at 00:00 UTC. It removes images at least three days old,
-so retention is three to four days when the cron succeeds. Mention f1280 images stay permanent.
+so retention is three to four days when the cron succeeds. Mention f1920 images stay permanent.
 A failed cron delays expiry. Old temporary images already deleted cannot be recovered.
 
 R2 lifecycle rules filter by prefix. The existing `videos/<id>/f640/` layout cannot use one shared rule

@@ -11,8 +11,8 @@ The model choices come from experiments recorded in `experiments/` (one 41 min v
 | Stage | Model | Result in the experiment |
 |---|---|---|
 | Is an X post on screen? (every frame, 1 fps, 640 px) | `@cf/cloudflare/clef-flash` | 15/15 intervals, about $0.04 per 41 min |
-| Is it really an X post, and not stream chat? (each picked frame, 1280 px) | `@cf/cloudflare/clef-flash` | see `pageThreshold` and `chatThreshold` |
-| Read handle, display name, text (1280 px) | `@cf/qwen/qwen3.8-27b` | 45/49 handles exact on 33 hand-checked frames |
+| Is it really an X post, and not stream chat? (each picked frame, 1920 px) | `@cf/cloudflare/clef-flash` | see `pageThreshold` and `chatThreshold` |
+| Read handle, display name, text (1920 px) | `@cf/qwen/qwen3.8-27b` | 48/49 handles exact on 33 hand-checked frames |
 | Did the speaker read this post aloud? | `@cf/cloudflare/clef` | yes ≥ 0.32, no ≤ 0.26 |
 | Where in the transcript? | `@cf/cloudflare/clairic` (`text` field span) | 11/11 within ~10 s |
 | Text search over on-screen posts | D1 FTS5 + Vectorize (`@cf/baai/bge-m3`) | — |
@@ -25,11 +25,11 @@ Cron (every 10 min) ──> discover new videos (RSS) ──> D1 videos(status=p
 POST /admin/backfill ──> Container /list (yt-dlp) ──> D1 videos(status=pending)
 
 VideoWorkflow(videoId)
-  1 extract     Container job: yt-dlp + ffmpeg → R2 (frames 640 + 1280, words.json or audio chunks)
+  1 extract     Container job: yt-dlp + ffmpeg → R2 (frames 640 + 1920, words.json or audio chunks)
   2 transcript  only if no captions: Whisper on audio chunks → R2 words.json
   3 detect      clef-flash on kept 640 frames → inherited per-second probability
   4 runs        merge positive seconds into runs, pick 1 frame per 5 s + run end
-  5 read        clef-flash, then qwen on the picked 1280 frames → posts per run (deduped)
+  5 read        clef-flash, then qwen on the picked 1920 frames → posts per run (deduped)
   6 read-aloud  per post: clef on the transcript window; if yes, clairic span → timestamp + quote sentence
   7 store       D1 mentions + FTS rows, Vectorize vectors
   8 cleanup     delete non-image extraction data; expire temporary frames after three days
@@ -50,7 +50,7 @@ interface Detector {
   frameState: string;            // clef-flash `state`
   frameQuestion: string;         // clef-flash noul question
   frameThreshold: number;        // 0.75
-  pageThreshold: number;         // 0.65, frameQuestion on the 1280 frame
+  pageThreshold: number;         // 0.65, frameQuestion on the 1920 frame
   chatQuestion: string;          // clef-flash noul question
   chatThreshold: number;         // 0.5
   readerPrompt: string;          // qwen prompt, one line per item: "@handle | display name | text"
@@ -85,9 +85,9 @@ The job, in order:
    (seconds rounded to 2 decimals).
    If there are no English captions: download `bestaudio`, convert with ffmpeg to 16 kHz mono mp3 in 600 s segments,
    upload `videos/<id>/audio/000.mp3`, `001.mp3`, ...
-3. Video: `-f "bv*[height<=720][vcodec^=avc1]/bv*[height<=720]/b[height<=720]"`. One ffmpeg pass with
-   `fps=1,mpdecimate=hi=768:lo=320:frac=0.1,split=2` writes 640 px wide (`-q:v 5`) and 1280 px wide (`-q:v 4`) JPEGs. Use `-fps_mode vfr -enc_time_base 1:1 -frame_pts 1` on both outputs so filenames are real seconds.
-   Upload as `videos/<id>/f640/<second>.jpg` and `videos/<id>/f1280/<second>.jpg` (second without zero padding).
+3. Video: `-f "bv*[height<=1080][vcodec^=vp]/bv*[height<=1080][vcodec^=avc1]/bv*[height<=1080]/b[height<=1080]"`. One ffmpeg pass with
+   `fps=1,mpdecimate=hi=768:lo=320:frac=0.1,split=2` writes 640 px wide (`-q:v 5`) and 1920 px wide, or the source width if smaller (`-q:v 4`) JPEGs. Use `-fps_mode vfr -enc_time_base 1:1 -frame_pts 1` on both outputs so filenames are real seconds.
+   Upload as `videos/<id>/f640/<second>.jpg` and `videos/<id>/f1920/<second>.jpg` (second without zero padding).
    Delete the video file after ffmpeg finishes.
 4. Upload `videos/<id>/manifest.json` =
    `{"videoId","title","duration","publishedAt","frames","keptSeconds","hasCaptions","audioChunks"}` last. `frames` is the count of all 1 fps samples before decimation, including a skipped tail.
@@ -127,7 +127,7 @@ Routes:
 - `POST /admin/backfill?source=theo&days=30`: bearer `INTERNAL_TOKEN`; Container `/list`, insert videos newer
   than `days` as `pending`, for each channel of the source. Skip videos shorter than 120 s (Shorts).
 - `POST /admin/process?v=<id>&source=theo`: bearer `INTERNAL_TOKEN`; insert as pending and start the workflow now.
-- `GET /frame/<videoId>/<second>.jpg`: an f1280 frame from R2, cached. Add `?size=640` for the exact detection frame. The route accepts only a video ID and numeric second, never an arbitrary R2 key.
+- `GET /frame/<videoId>/<second>.jpg`: an f1920 frame from R2, cached. Add `?size=640` for the exact detection frame. The route accepts only a video ID and numeric second, never an arbitrary R2 key.
 - `GET /`: the lookup page. `GET /api/lookup`: the same data as JSON.
 
 Cron: for each channel of each source, read the YouTube RSS feed (a failing channel is logged and skipped), insert unknown videos as `pending`, then start workflows for
@@ -148,7 +148,7 @@ whose latest workflow instance is missing or finished, so a failed workflow cann
   backoff. Return probabilities rounded to 3 decimals. Expand them to all video seconds by inheriting the previous kept value. Missing stored frames fail the step.
 - runs: seconds with p ≥ `frameThreshold`; join runs with gaps ≤ 3 s. Picks = every 5 s from the run start, plus the
   run end. Resolve each pick to its previous kept frame while preserving the requested second for observations.
-- read: one step per run. For each pick, one clef-flash call asks `frameQuestion` and `chatQuestion` on the 1280 frame.
+- read: one step per run. For each pick, one clef-flash call asks `frameQuestion` and `chatQuestion` on the 1920 frame.
   A frame under `pageThreshold` or at `chatThreshold` is dropped and the reader does not see it (`read.frames` counts each result).
   Then qwen with `temperature: 0`, `chat_template_kwargs: { enable_thinking: false }`, `max_tokens: 1500`.
   Parse rows `@handle | display name | text`; a line without the columns continues the row above it.
@@ -158,7 +158,7 @@ whose latest workflow instance is missing or finished, so a failed workflow cann
   if the shorter one has ≥ 8 characters and is a prefix of the other, or if the shorter one has ≥ 6 characters and
   edit distance ≤ 2 (reader misreads). In each group keep each distinct text slice (token Jaccard < 0.6 to the
   others; a similar longer slice replaces a shorter one), the most common handle spelling, the first and last second
-  seen, and the 1280 frame second where it was first seen.
+  seen, and the 1920 frame second where it was first seen.
 - read-aloud: transcript window = words from run start - 30 s to run end + 30 s, joined with spaces, keeping the
   character offset of each word. clef `noul` with `readAloudQuestion` on each of the 3 longest
   slices; keep the highest p and its slice (a screenshot in a post can be longer than the post). If p ≥ `readAloudThreshold`, clairic
@@ -168,7 +168,7 @@ whose latest workflow instance is missing or finished, so a failed workflow cann
   mentions and FTS rows (re-runs are idempotent). Then delete the `stale_vectors` ids from Vectorize and their rows.
   A retry after a partial failure still finds the old ids. Embed `@handle: text` with bge-m3 and upsert to Vectorize with id `<videoId>:<mentionId>` and metadata
   `{ videoId, mentionId, handle }`.
-- cleanup: delete non-image extraction objects. A daily sweep at 00:00 UTC deletes temporary f640 and f1280 images at least three days old, except f1280 images referenced by mentions. Bulk deletes use at most 1000 keys. See `docs/frame-sampling.md`.
+- cleanup: delete non-image extraction objects. A daily sweep at 00:00 UTC deletes temporary f640 and f1920 images at least three days old, except f1920 images referenced by mentions. Bulk deletes use at most 1000 keys. See `docs/frame-sampling.md`.
 
 ### D1 schema (`migrations/0001_init.sql`, `0002_stale_vectors.sql`)
 

@@ -6,6 +6,7 @@ import type { Env } from "./env";
 import { LookupError, lookup } from "./lookup";
 import type { LookupResult, Match } from "./lookup";
 import { formatTime } from "./pipeline";
+import { largeFrame } from "./retention";
 import { resultPath } from "./share";
 
 const xml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]!);
@@ -34,7 +35,7 @@ async function frameImage(env: Env, match?: Match): Promise<string> {
   if (!match) return "";
   const path = match.frameUrl.match(/^\/frame\/([\w-]+)\/(\d+)\.jpg$/);
   if (!path) return "";
-  const object = await env.BUCKET.get(`videos/${path[1]}/f1280/${path[2]}.jpg`);
+  const object = await largeFrame(env.BUCKET, path[1], path[2]);
   return object ? dataUrl(await object.arrayBuffer(), "image/jpeg") : "";
 }
 

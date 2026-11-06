@@ -116,10 +116,21 @@ describe("parseReaderLines", () => {
     expect(parseReaderLines("NONE")).toEqual([]);
   });
 
+  const LONG_POST = "a real post that is long enough to find with a text search later";
+
   test("marks an unreadable handle as unknown and keeps the post", () => {
     for (const handle of ["@unknown", "?", "@ma?ia", "@chasmmm…", "@chasmmm...", "@Pipkin Pippa", ""]) {
-      expect(parseReaderLines(`${handle} | Name | a real post`)).toEqual([{ handle: "@unknown", displayName: "Name", text: "a real post" }]);
+      expect(parseReaderLines(`${handle} | Name | ${LONG_POST}`)).toEqual([{ handle: "@unknown", displayName: "Name", text: LONG_POST }]);
     }
+  });
+
+  test("drops a short line with no handle, such as a tab title or a stream card", () => {
+    expect(parseReaderLines('@unknown | | (21) Addy Osmani on X: "How th\n@unknown | Esfand | <Crusade> Alliance - PvP - WoW: Forever ...')).toEqual([]);
+    expect(parseReaderLines("@theo | Theo | ok then")).toEqual([{ handle: "@theo", displayName: "Theo", text: "ok then" }]);
+  });
+
+  test("clears the page heading used as a display name", () => {
+    expect(parseReaderLines(`@unknown | Post | ${LONG_POST}`)).toEqual([{ handle: "@unknown", displayName: "", text: LONG_POST }]);
   });
 
   test("drops a handle that X does not allow", () => {

@@ -292,9 +292,9 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     const env = this.env;
     const observations: Observation[] = [];
     await pool(pickSeconds(run), READ_CONCURRENCY, async (second) => {
-      const frame = await env.BUCKET.get(key(videoId, `f1280/${timeline[second]}.jpg`));
+      const frame = await env.BUCKET.get(key(videoId, `f1920/${timeline[second]}.jpg`));
       if (!frame) throw new Error(`missing reader frame ${timeline[second]}`);
-      const lines = await readPosts(env, detector, await frame.arrayBuffer(), { videoId, second: timeline[second], size: "f1280" });
+      const lines = await readPosts(env, detector, await frame.arrayBuffer(), { videoId, second: timeline[second], size: "f1920" });
       for (const line of lines) observations.push({ second, line });
     });
     return groupPosts(observations).map((post) => ({ ...post, frameSecond: timeline[post.frameSecond] }));
@@ -427,7 +427,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     let cursor: string | undefined;
     do {
       const page = await bucket.list({ prefix: key(videoId, ""), cursor, limit: 1000 });
-      const keys = page.objects.map((o) => o.key).filter((k) => !/^videos\/[^/]+\/f(?:640|1280)\//.test(k));
+      const keys = page.objects.map((o) => o.key).filter((k) => !/^videos\/[^/]+\/f(?:640|1280|1920)\//.test(k));
       if (keys.length) await bucket.delete(keys);
       deleted += keys.length;
       cursor = page.truncated ? page.cursor : undefined;

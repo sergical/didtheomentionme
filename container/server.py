@@ -22,8 +22,8 @@ UPLOAD_ATTEMPTS = 5
 NOT_READY_STATES = {"is_live", "is_upcoming", "post_live"}
 ID_PATTERN = re.compile(r"^[\w-]{1,64}$")
 # Equal to JOB_PROTOCOL in src/container.ts. Bump both with each change to the /jobs contract.
-JOB_PROTOCOL = 2
-VIDEO_FORMAT = "bv*[height<=720][vcodec^=avc1]/bv*[height<=720]/b[height<=720]"
+JOB_PROTOCOL = 3
+VIDEO_FORMAT = "bv*[height<=1080][vcodec^=vp]/bv*[height<=1080][vcodec^=avc1]/bv*[height<=1080]/b[height<=1080]"
 AUDIO_SEGMENT_SECONDS = 600
 
 LOCK = threading.Lock()
@@ -263,12 +263,12 @@ def download_video(video_id, tmp):
 
 
 def extract_frames(tmp, video, video_id, uploader):
-    for name in ("f640", "f1280"):
+    for name in ("f640", "f1920"):
         (tmp / name).mkdir()
     submitted = set()
 
     def upload_finished_images():
-        for name in ("f640", "f1280"):
+        for name in ("f640", "f1920"):
             for path in (tmp / name).glob("*.jpg"):
                 if path not in submitted:
                     submitted.add(path)
@@ -287,9 +287,9 @@ def extract_frames(tmp, video, video_id, uploader):
         # atomic_writing gives an image its .jpg name only when the image is complete.
         run_checked(
             ["ffmpeg", "-v", "error", "-skip_frame", "noref", "-i", str(video), "-an",
-             "-filter_complex", "[0:v]fps=1,split=2[a][b];[a]scale=640:-2[s640];[b]scale=1280:-2[s1280]",
+             "-filter_complex", "[0:v]fps=1,split=2[a][b];[a]scale=640:-2[s640];[b]scale='min(1920,iw)':-2[s1920]",
              "-map", "[s640]", "-q:v", "5", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f640" / "%d.jpg"),
-             "-map", "[s1280]", "-q:v", "4", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f1280" / "%d.jpg")],
+             "-map", "[s1920]", "-q:v", "4", "-fps_mode", "vfr", "-enc_time_base", "1:1", "-frame_pts", "1", "-atomic_writing", "1", str(tmp / "f1920" / "%d.jpg")],
             "ffmpeg failed",
         )
     finally:

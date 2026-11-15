@@ -116,17 +116,16 @@ export async function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffe
   return (await askAboutFrame(env, detector.frameState, { frame: detector.frameQuestion }, jpeg, frame)).frame;
 }
 
-/** Raw reader output: one `@handle | display name | text` line per post. */
-async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
+async function askReader(env: Env, prompt: string, maxTokens: number, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
   const inputs = {
-    max_tokens: 1500,
+    max_tokens: maxTokens,
     temperature: 0,
     chat_template_kwargs: { enable_thinking: false },
     messages: [
       {
         role: "user",
         content: [
-          { type: "text", text: detector.readerPrompt },
+          { type: "text", text: prompt },
           { type: "image_url", image_url: { url: `data:image/jpeg;base64,${toBase64(jpeg)}` } },
         ],
       },
@@ -140,12 +139,21 @@ async function readFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame:
   return text;
 }
 
-/** The reader lists stream chat and other sites as X posts, so the full-size frame is checked first. */
+/** The reader lists stream chat and other sites as X posts, so the full-size frame is checked first and the source is asked apart. */
 export async function readPosts(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<ReaderLine[]> {
   const { page, chat } = await askAboutFrame(env, detector.frameState, { page: detector.frameQuestion, chat: detector.chatQuestion }, jpeg, frame);
-  const result = page < detector.pageThreshold ? "not_x" : chat >= detector.chatThreshold ? "chat" : "read";
-  metrics.count("read.frames", 1, { attributes: { result } });
-  return result === "read" ? parseReaderLines(await readFrame(env, detector, jpeg, frame)) : [];
+  const skip = page < detector.pageThreshold ? "not_x" : chat >= detector.chatThreshold ? "chat" : null;
+  if (skip) {
+    metrics.count("read.frames", 1, { attributes: { result: skip } });
+    return [];
+  }
+  const [output, source] = await Promise.all([
+    askReader(env, detector.readerPrompt, 1500, jpeg, frame),
+    askReader(env, detector.sourceQuestion, 5, jpeg, frame),
+  ]);
+  const notPost = /^\W*(chat|other)\b/i.test(source);
+  metrics.count("read.frames", 1, { attributes: { result: notPost ? "not_post" : "read" } });
+  return notPost ? [] : parseReaderLines(output);
 }
 
 export async function readAloudProbability(env: Env, detector: Detector, post: Post, transcript: string): Promise<number> {

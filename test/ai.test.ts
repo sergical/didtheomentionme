@@ -116,14 +116,14 @@ test("an abandoned model call is not sent again", async () => {
 describe("reading a frame", () => {
   const jpeg = new ArrayBuffer(1);
   const frame = { videoId: "v", second: 1, size: "f1920" } as const;
-  const read = (page: number, chat: number) => {
+  const read = (page: number, chat: number, source = "X") => {
     let reads = 0;
     const env = {
       AI: {
-        run: async (model: string) => {
+        run: async (model: string, inputs: { max_tokens: number }) => {
           if (model.includes("flash")) return { answers: { page: { noul: page }, chat: { noul: chat } } };
           reads++;
-          return { choices: [{ message: { content: "@alice | Alice | a real post" } }] };
+          return { choices: [{ message: { content: inputs.max_tokens === 5 ? source : "@alice | Alice | a real post" } }] };
         },
       },
     } as unknown as Env;
@@ -133,8 +133,14 @@ describe("reading a frame", () => {
   test("a page with an X post and no chat is read", async () => {
     const result = read(0.72, 0.35);
     expect(await result.lines).toEqual([{ handle: "@alice", displayName: "Alice", text: "a real post" }]);
-    expect(result.reads()).toBe(1);
+    expect(result.reads()).toBe(2);
   });
+
+  for (const source of ["CHAT", "OTHER", "chat."]) {
+    test(`text from a frame answered ${source} is dropped`, async () => {
+      expect(await read(0.87, 0.05, source).lines).toEqual([]);
+    });
+  }
 
   test("a page that is not X is not read", async () => {
     const result = read(0.64, 0.1);

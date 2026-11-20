@@ -204,6 +204,8 @@ def fetch_metadata(video_id):
         # yt-dlp fails outright for scheduled streams and premieres instead of reporting live_status.
         if "live event will begin" in stderr or "Premieres in" in stderr:
             raise JobError("not_ready")
+        if "members-only content" in stderr:
+            raise JobError("members_only")
         raise JobError(f"metadata failed (exit {code}): {stderr.strip()[-1500:]}")
     info = json.loads(stdout)
     if info.get("live_status") in NOT_READY_STATES:

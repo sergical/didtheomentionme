@@ -207,7 +207,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
     return job;
   }
 
-  private async extract(videoId: string, instanceId: string, step: PhaseStep): Promise<Manifest | "not_ready"> {
+  private async extract(videoId: string, instanceId: string, step: PhaseStep): Promise<Manifest | "not_ready" | "skipped"> {
     await step.do("extract-start", START_STEP, () => this.startJob(videoId, instanceId));
     // Only a timeout or a restart uses up a wait. A stop event from a container that is gone, with the job
     // still running, does not.
@@ -225,6 +225,7 @@ class Workflow extends WorkflowEntrypoint<Env, VideoParams> {
       await step.do("extract-release", IO_STEP, () => destroyContainer(this.env, videoId));
       if (job.state === "error") {
         if (job.error === "not_ready") return "not_ready";
+        if (job.error === "members_only") return "skipped";
         throw new NonRetryableError(`extract failed at ${job.stage}: ${job.error}`);
       }
       const { manifest } = job;

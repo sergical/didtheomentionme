@@ -1,5 +1,6 @@
 import { SOURCES } from "./config";
-import type { Env } from "./env";
+import { Effect } from "effect";
+import { span, sql } from "./runtime";
 import { UNKNOWN_HANDLE, formatTime } from "./pipeline";
 import { reading } from "./lookup";
 import { NEW_TAB, PICKER_SCRIPT, PLAY, creatorPicker, documentHead, esc, formatDate, hue, plural, saidFigure, youtube, type SourceRef } from "./page";
@@ -79,10 +80,10 @@ const POSITION_BINS = 10;
 
 const DONE = "JOIN videos v ON v.id = m.video_id WHERE v.source = ? AND v.status = 'done'";
 
-export async function exploreData(env: Env, source: SourceRef, sources: SourceRef[], sort: ExploreSort): Promise<ExploreData> {
-  const all = <T>(sql: string, ...binds: unknown[]) => env.DB.prepare(sql).bind(...binds).all<T>().then((r) => r.results);
+export const exploreData = (source: SourceRef, sources: SourceRef[], sort: ExploreSort) => Effect.gen(function* () {
+  const all = sql.all;
   const handles = SOURCES.map((s) => s.xHandle.toLowerCase());
-  const [[videoTotals], [mentionTotals], accounts, bins, longReads, videos, videoAccounts, crossRows] = await Promise.all([
+  const [[videoTotals], [mentionTotals], accounts, bins, longReads, videos, videoAccounts, crossRows] = yield* Effect.all([
     all<Pick<Totals, "videos" | "seconds" | "from" | "to">>(
       `SELECT COUNT(*) AS videos, COALESCE(SUM(duration), 0) AS seconds, MIN(published_at) AS "from", MAX(published_at) AS "to"
        FROM videos WHERE source = ? AND status = 'done'`,
@@ -129,7 +130,7 @@ export async function exploreData(env: Env, source: SourceRef, sources: SourceRe
        WHERE v.status = 'done' AND m.handle_norm IN (${handles.map(() => "?").join(",")}) GROUP BY v.source, m.handle_norm`,
       ...handles,
     ),
-  ]);
+  ], { concurrency: "unbounded" });
 
   const byVideo = new Map<string, Video["accounts"]>();
   for (const { videoId, handle, shown } of videoAccounts) {
@@ -159,7 +160,7 @@ export async function exploreData(env: Env, source: SourceRef, sources: SourceRe
     videos: videos.map((v) => ({ ...v, accounts: byVideo.get(v.id) ?? [] })),
     crossovers,
   };
-}
+}).pipe(span("explore data", "function", { "explore.source": source.id, "explore.sort": sort }));
 
 /** Readings, not comments, with one card for each frame or quote. Two rows can share both when one post was read twice. */
 function realReads(rows: LongRead[]): LongRead[] {

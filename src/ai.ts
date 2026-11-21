@@ -1,8 +1,8 @@
-import { logger, metrics } from "@sentry/cloudflare";
+import { Effect, Fiber, Option } from "effect";
 import type { Detector, Post } from "./config";
-import type { Env } from "./env";
 import { parseReaderLines, quoteSpan, wordRunSpan, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
-import { chatSpan, transcribeSpan, withEstimatedInputTokens, withFrameReference, type FrameReference, WHISPER } from "./telemetry";
+import { Bindings, annotate, span } from "./runtime";
+import { OPERATIONS, WHISPER, errorMessage, frameAttributes, redactImages, usageAttributes, whisperCostAttributes, type Attributes, type FrameReference } from "./telemetry";
 
 // The AI binding types in workers-types do not list these models.
 type AnyRun = { run(model: string, inputs: unknown): Promise<any> };
@@ -15,79 +15,78 @@ const EMBED = "@cf/baai/bge-m3";
 /** On 142 sampled frames half answered in 3.5 s, 7 took over 20 s and the slowest 37 s. Each of those 7 costs one extra call. */
 const READ_HEDGE_MS = 20_000;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * The wait before the next attempt, or null when a retry cannot help. Error 3021 is the per-minute limit on
  * inference requests, so it waits for the minute to move on, not for a second.
  */
 export function retryDelayMs(err: unknown, attempt: number): number | null {
   const status = (err as { status?: number })?.status;
-  const message = String((err as Error)?.message ?? err);
+  const message = errorMessage(err);
   const rateLimited = status === 429 || /\b(429|3021)\b|rate limit/i.test(message);
   const retryable = status !== undefined ? rateLimited || status >= 500 : rateLimited || /\b5\d\d\b|capacity|overloaded|timed? ?out|temporar|internal/i.test(message);
   if (!retryable) return null;
   return (rateLimited ? 10_000 : 1000) * 2 ** attempt + Math.random() * 500;
 }
 
-export async function runModel(env: Env, model: string, inputs: unknown, attempts = 3, abandoned = () => false): Promise<any> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await (env.AI as unknown as AnyRun).run(model, inputs);
-    } catch (err) {
+/** One binding call, retried while a retry can help. An interrupted call, for example a hedge's loser, stops retrying. */
+export const runModel = (model: string, inputs: unknown, attempts = 3): Effect.Effect<any, unknown, Bindings> =>
+  Effect.gen(function* () {
+    const env = yield* Bindings;
+    for (let attempt = 0; ; attempt++) {
+      const result = yield* Effect.result(Effect.tryPromise({ try: () => (env.AI as unknown as AnyRun).run(model, inputs), catch: (err) => err }));
+      if (result._tag === "Success") {
+        if (attempt) yield* annotate({ "app.retries": attempt });
+        return result.success;
+      }
+      const err = result.failure;
       const delay = retryDelayMs(err, attempt);
-      if (attempt >= attempts - 1 || delay === null || abandoned()) throw err;
-      const error = String((err as Error)?.message ?? err).slice(0, 300);
-      logger.warn(logger.fmt`${model} failed, retry ${attempt + 1} of ${attempts - 1}`, { "gen_ai.request.model": model, error });
-      metrics.count("ai.retry", 1, { attributes: { "gen_ai.request.model": model } });
-      await sleep(delay);
-      if (abandoned()) throw err;
+      if (attempt >= attempts - 1 || delay === null) return yield* Effect.fail(err);
+      yield* Effect.logWarning(`${model} failed, retry ${attempt + 1} of ${attempts - 1}`).pipe(
+        Effect.annotateLogs({ "gen_ai.request.model": model, error: errorMessage(err).slice(0, 300) }),
+      );
+      yield* Effect.sleep(delay);
     }
-  }
-}
+  });
+
+/**
+ * A gen_ai span for one model call, in the names Sentry's AI Agents views read. Its attributes are set when the
+ * call starts and ends, so nothing rewrites the span before it is sent.
+ */
+export const modelSpan = (model: string, attributes: Attributes) =>
+  span(`${OPERATIONS[model] ?? "run"} ${model}`, `gen_ai.${OPERATIONS[model] ?? "run"}`, {
+    "gen_ai.operation.name": OPERATIONS[model] ?? "run",
+    "gen_ai.provider.name": "cloudflare.workers_ai",
+    "gen_ai.request.model": model,
+    ...attributes,
+  });
+
+/** Usage from the answer, or an estimate of 4 characters per token when the model reports none. */
+const recordUsage = (model: string, result: any, estimate?: number) => {
+  const input = result?.usage?.prompt_tokens ?? result?.usage?.input_tokens;
+  const output = result?.usage?.completion_tokens ?? result?.usage?.output_tokens ?? 0;
+  if (typeof input === "number") return annotate(usageAttributes(model, input, output));
+  return estimate === undefined ? Effect.void : annotate(usageAttributes(model, estimate, 0, true));
+};
+
+const json = (value: unknown) => JSON.stringify(value);
 
 /**
  * Starts a second call when the first has not answered after `delayMs`, and returns the first answer. Workers AI
  * sometimes holds one reader call for over a minute, while the same frame answers in seconds when sent again.
- * It fails when the second call fails, or when neither answers in 4 × `delayMs`, so the step can retry.
+ * It fails when the second call fails, or when neither answers in 4 × `delayMs`, so the step can retry. The call
+ * that loses is interrupted.
  */
-export function hedge<T>(model: string, delayMs: number, call: (abandoned: () => boolean) => Promise<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let running = 0;
-    let settled = false;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    const settle = <A>(fn: (value: A) => void) => (value: A) => {
-      settled = true;
-      timers.forEach(clearTimeout);
-      fn(value);
-    };
-    const start = (second: boolean) => {
-      running++;
-      call(() => settled).then(settle(resolve), (err) => {
-        if (--running === 0 || second) settle(reject)(err);
-      });
-    };
-    timers.push(setTimeout(() => {
-      logger.warn(logger.fmt`${model} gave no answer in ${delayMs} ms, sent the call again`, { "gen_ai.request.model": model });
-      metrics.count("ai.hedge", 1, { attributes: { "gen_ai.request.model": model } });
-      start(true);
-    }, delayMs));
-    timers.push(setTimeout(() => settle(reject)(new Error(`${model} gave no answer in ${4 * delayMs} ms`)), 4 * delayMs));
-    start(false);
-  });
-}
-
-export async function pool<T>(items: T[], size: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(size, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
-        await fn(items[index], index);
-      }
-    }),
-  );
-}
+export const hedge = <A, E, R>(model: string, delayMs: number, call: Effect.Effect<A, E, R>): Effect.Effect<A, E | Error, R> =>
+  Effect.gen(function* () {
+    const first = yield* Effect.forkChild(call);
+    // `exit`, because a timeout would otherwise wait out a first call that fails early.
+    const early = yield* Effect.timeoutOption(Effect.exit(Fiber.join(first)), delayMs);
+    if (Option.isSome(early)) return yield* early.value;
+    yield* Effect.logWarning(`${model} gave no answer in ${delayMs} ms, sent the call again`).pipe(Effect.annotateLogs({ "gen_ai.request.model": model }));
+    yield* annotate({ "app.hedged": true });
+    // A failed first call leaves the answer to the second; a failed second call fails the hedge.
+    return yield* Effect.raceFirst(Effect.catchCause(Fiber.join(first), () => Effect.never), call);
+  }).pipe(Effect.timeoutOrElse({ duration: 4 * delayMs, orElse: () => Effect.fail(new Error(`${model} gave no answer in ${4 * delayMs} ms`)) }));
 
 export function toBase64(bytes: ArrayBuffer): string {
   const view = new Uint8Array(bytes);
@@ -96,76 +95,69 @@ export function toBase64(bytes: ArrayBuffer): string {
   return btoa(binary);
 }
 
-async function askAboutFrame<Q extends string>(env: Env, state: string, questions: Record<Q, string>, jpeg: ArrayBuffer, frame: FrameReference): Promise<Record<Q, number>> {
+function askAboutFrame<Q extends string>(state: string, questions: Record<Q, string>, jpeg: ArrayBuffer, frame: FrameReference) {
   const names = Object.keys(questions) as Q[];
-  const result = await withFrameReference(frame, () => runModel(env, FLASH, {
-    model: "clef-flash",
-    state,
-    images: [{ content_type: "image/jpeg", base64: toBase64(jpeg) }],
-    questions: Object.fromEntries(names.map((name) => [name, { type: "noul", instructions: questions[name] }])),
-  }));
-  return Object.fromEntries(names.map((name) => {
-    const p = result?.answers?.[name]?.noul;
-    if (typeof p !== "number") throw new Error(`clef-flash returned no answer: ${JSON.stringify(result).slice(0, 200)}`);
-    return [name, p];
-  })) as Record<Q, number>;
+  const asked = Object.fromEntries(names.map((name) => [name, { type: "noul", instructions: questions[name] }]));
+  return Effect.gen(function* () {
+    const result = yield* runModel(FLASH, { model: "clef-flash", state, images: [{ content_type: "image/jpeg", base64: toBase64(jpeg) }], questions: asked });
+    yield* recordUsage(FLASH, result);
+    yield* annotate({ "gen_ai.output.messages": json(result?.answers ?? null) });
+    return Object.fromEntries(names.map((name) => {
+      const p = result?.answers?.[name]?.noul;
+      if (typeof p !== "number") throw new Error(`clef-flash returned no answer: ${json(result).slice(0, 200)}`);
+      return [name, p];
+    })) as Record<Q, number>;
+  }).pipe(modelSpan(FLASH, { ...frameAttributes(frame), "gen_ai.input.messages": json([{ role: "user", state, questions: asked }]) }));
 }
 
 /** Probability that an X post (or whatever the detector looks for) is on screen. */
-export async function detectFrame(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<number> {
-  return (await askAboutFrame(env, detector.frameState, { frame: detector.frameQuestion }, jpeg, frame)).frame;
-}
+export const detectFrame = (detector: Detector, jpeg: ArrayBuffer, frame: FrameReference) =>
+  Effect.map(askAboutFrame(detector.frameState, { frame: detector.frameQuestion }, jpeg, frame), (answers) => answers.frame);
 
-async function askReader(env: Env, prompt: string, maxTokens: number, jpeg: ArrayBuffer, frame: FrameReference): Promise<string> {
-  const inputs = {
-    max_tokens: maxTokens,
-    temperature: 0,
-    chat_template_kwargs: { enable_thinking: false },
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: prompt },
-          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${toBase64(jpeg)}` } },
-        ],
-      },
-    ],
-  };
-  const result = await withFrameReference(frame, () =>
-    chatSpan(READER, inputs, () => hedge(READER, READ_HEDGE_MS, (abandoned) => runModel(env, READER, inputs, 3, abandoned))),
-  );
-  const text = result?.choices?.[0]?.message?.content ?? result?.response;
-  if (typeof text !== "string") throw new Error(`${READER} returned no text: ${JSON.stringify(result).slice(0, 200)}`);
-  return text;
+function askReader(prompt: string, maxTokens: number, jpeg: ArrayBuffer, frame: FrameReference) {
+  const messages = [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${toBase64(jpeg)}` } }] }];
+  const inputs = { max_tokens: maxTokens, temperature: 0, chat_template_kwargs: { enable_thinking: false }, messages };
+  const attributes = frameAttributes(frame);
+  return Effect.gen(function* () {
+    const result = yield* hedge(READER, READ_HEDGE_MS, runModel(READER, inputs));
+    yield* recordUsage(READER, result);
+    const choice = result?.choices?.[0];
+    const text = choice?.message?.content ?? result?.response;
+    if (typeof text !== "string") return yield* Effect.fail(new Error(`${READER} returned no text: ${json(result).slice(0, 200)}`));
+    yield* annotate({ "gen_ai.output.messages": json([{ role: "assistant", parts: [{ type: "text", content: text }], finish_reason: choice?.finish_reason }]) });
+    return text;
+  }).pipe(modelSpan(READER, { ...attributes, "gen_ai.request.max_tokens": maxTokens, "gen_ai.input.messages": redactImages(json(messages), attributes["app.frame.url"]) }));
 }
 
 /** The reader lists stream chat and other sites as X posts, so the full-size frame is checked first and the source is asked apart. */
-export async function readPosts(env: Env, detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Promise<ReaderLine[]> {
-  const { page, chat } = await askAboutFrame(env, detector.frameState, { page: detector.frameQuestion, chat: detector.chatQuestion }, jpeg, frame);
-  const skip = page < detector.pageThreshold ? "not_x" : chat >= detector.chatThreshold ? "chat" : null;
-  if (skip) {
-    metrics.count("read.frames", 1, { attributes: { result: skip } });
-    return [];
-  }
-  const [output, source] = await Promise.all([
-    askReader(env, detector.readerPrompt, 1500, jpeg, frame),
-    askReader(env, detector.sourceQuestion, 5, jpeg, frame),
-  ]);
-  const notPost = /^\W*(chat|other)\b/i.test(source);
-  metrics.count("read.frames", 1, { attributes: { result: notPost ? "not_post" : "read" } });
-  return notPost ? [] : parseReaderLines(output);
-}
+export const readPosts = (detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Effect.Effect<ReaderLine[], unknown, Bindings> =>
+  Effect.gen(function* () {
+    const { page, chat } = yield* askAboutFrame(detector.frameState, { page: detector.frameQuestion, chat: detector.chatQuestion }, jpeg, frame);
+    const skip = page < detector.pageThreshold ? "not_x" : chat >= detector.chatThreshold ? "chat" : null;
+    if (skip) {
+      yield* annotate({ "read.frame_result": skip });
+      return [];
+    }
+    const [output, source] = yield* Effect.all([
+      askReader(detector.readerPrompt, 1500, jpeg, frame),
+      askReader(detector.sourceQuestion, 5, jpeg, frame),
+    ], { concurrency: 2 });
+    const notPost = /^\W*(chat|other)\b/i.test(source);
+    yield* annotate({ "read.frame_result": notPost ? "not_post" : "read" });
+    return notPost ? [] : parseReaderLines(output);
+  }).pipe(span("read frame", "function", frameAttributes(frame)));
 
-export async function readAloudProbability(env: Env, detector: Detector, post: Post, transcript: string): Promise<number> {
-  const result = await runModel(env, CLEF, {
-    model: "clef",
-    state: transcript,
-    questions: { read: { type: "noul", instructions: detector.readAloudQuestion(post) } },
-  });
-  const p = result?.answers?.read?.noul;
-  if (typeof p !== "number") throw new Error(`clef returned no answer: ${JSON.stringify(result).slice(0, 200)}`);
-  return p;
-}
+export const readAloudProbability = (detector: Detector, post: Post, transcript: string) => {
+  const questions = { read: { type: "noul", instructions: detector.readAloudQuestion(post) } };
+  return Effect.gen(function* () {
+    const result = yield* runModel(CLEF, { model: "clef", state: transcript, questions });
+    yield* recordUsage(CLEF, result);
+    const p = result?.answers?.read?.noul;
+    if (typeof p !== "number") return yield* Effect.fail(new Error(`clef returned no answer: ${json(result).slice(0, 200)}`));
+    yield* annotate({ "gen_ai.output.messages": json(result.answers) });
+    return p as number;
+  }).pipe(modelSpan(CLEF, { "app.task": "read-aloud check", "gen_ai.input.messages": json([{ role: "user", state: transcript, questions }]) }));
+};
 
 /** `question` and `answer` are what Clairic was asked and said, which a trace needs when the app does not use the answer. */
 export type QuoteSearch = {
@@ -180,26 +172,29 @@ export type QuoteSearch = {
  * their own words, Clairic still picks a sentence, often an unrelated one, so the question depends on whether the
  * post's words are in the transcript.
  */
-export async function findQuote(env: Env, detector: Detector, post: Post, transcript: string): Promise<QuoteSearch> {
+export const findQuote = (detector: Detector, post: Post, transcript: string): Effect.Effect<QuoteSearch, unknown, Bindings> => {
   const run = wordRunSpan(post.text, transcript);
   const question = run ? detector.quoteInstructions(post) : detector.ownWordsInstructions(post);
-  const result = await runModel(env, CLAIRIC, {
-    model: "clairic",
-    state: transcript,
-    fields: { quote: { type: "text", instructions: question } },
-  });
-  const raw = result?.answers?.quote?.span;
-  const answer = Array.isArray(raw) ? transcript.slice(raw[0], raw[1]) : null;
-  const span = quoteSpan(raw, transcript);
-  if (span) return { question, answer, span, how: run ? "read" : "own_words" };
-  return { question, answer, span: run, how: run && "word_run" };
-}
+  const fields = { quote: { type: "text", instructions: question } };
+  return Effect.gen(function* () {
+    const result = yield* runModel(CLAIRIC, { model: "clairic", state: transcript, fields });
+    yield* recordUsage(CLAIRIC, result);
+    const raw = result?.answers?.quote?.span;
+    const answer = Array.isArray(raw) ? transcript.slice(raw[0], raw[1]) : null;
+    yield* annotate({ "gen_ai.output.messages": json([{ role: "assistant", parts: [{ type: "text", content: answer }] }]) });
+    const span = quoteSpan(raw, transcript);
+    if (span) return { question, answer, span, how: run ? "read" : "own_words" } as const;
+    return { question, answer, span: run, how: run && "word_run" } as QuoteSearch;
+  }).pipe(modelSpan(CLAIRIC, { "app.task": "quote finder", "gen_ai.input.messages": json([{ role: "user", state: transcript, fields }]) }));
+};
 
-/** Word timings for one audio chunk; `offsetSeconds` is the chunk start in the video. */
-export async function transcribe(env: Env, mp3: ArrayBuffer, offsetSeconds: number): Promise<Word[]> {
-  const result = await transcribeSpan(() => runModel(env, WHISPER, { audio: toBase64(mp3) }));
-  return wordsFromSegments(result?.segments ?? [], offsetSeconds);
-}
+/** Word timings for one audio chunk; `offsetSeconds` is the chunk start in the video. Whisper is priced by audio minute. */
+export const transcribe = (mp3: ArrayBuffer, offsetSeconds: number): Effect.Effect<Word[], unknown, Bindings> =>
+  Effect.gen(function* () {
+    const result = yield* runModel(WHISPER, { audio: toBase64(mp3) });
+    yield* annotate(whisperCostAttributes(result?.transcription_info?.duration ?? 0));
+    return wordsFromSegments(result?.segments ?? [], offsetSeconds);
+  }).pipe(modelSpan(WHISPER, { "app.audio_offset": offsetSeconds, "gen_ai.input.messages": `[audio/mpeg, ${Math.round(mp3.byteLength / 1024)} KB]` }));
 
 /** bge-m3 pads each text to the longest one in its request, and counts the padded tokens against this limit. */
 const EMBED_REQUEST_TOKENS = 60_000;
@@ -226,23 +221,23 @@ export function embedRequests(texts: string[]): string[][] {
 }
 
 /** Error 8007 means the request was over the token limit, because other scripts and repeated symbols beat the estimate. */
-async function embedRequest(env: Env, request: string[]): Promise<number[][]> {
-  let result;
-  try {
-    result = await withEstimatedInputTokens(request, () => runModel(env, EMBED, { text: request }));
-  } catch (err) {
-    if (request.length === 1 || !/\b8007\b/.test(String((err as Error)?.message ?? err))) throw err;
-    const half = request.length >> 1;
-    return [...(await embedRequest(env, request.slice(0, half))), ...(await embedRequest(env, request.slice(half)))];
-  }
-  if (!Array.isArray(result?.data) || result.data.length !== request.length) {
-    throw new Error(`bge-m3 returned ${result?.data?.length} vectors for ${request.length} texts`);
-  }
-  return result.data;
-}
+const embedRequest = (request: string[]): Effect.Effect<number[][], unknown, Bindings> =>
+  Effect.gen(function* () {
+    // bge-m3 returns no token usage, so the span gets an estimate of 4 characters per token.
+    const estimate = request.reduce((sum, text) => sum + Math.ceil(text.length / 4), 0);
+    const result = yield* Effect.result(runModel(EMBED, { text: request }).pipe(
+      Effect.tap((result) => recordUsage(EMBED, result, estimate)),
+      modelSpan(EMBED, { "gen_ai.input.messages": `[${request.length} texts]` }),
+    ));
+    if (result._tag === "Failure") {
+      if (request.length === 1 || !/\b8007\b/.test(errorMessage(result.failure))) return yield* Effect.fail(result.failure);
+      const half = request.length >> 1;
+      return [...(yield* embedRequest(request.slice(0, half))), ...(yield* embedRequest(request.slice(half)))];
+    }
+    const data = result.success?.data;
+    if (!Array.isArray(data) || data.length !== request.length) return yield* Effect.fail(new Error(`bge-m3 returned ${data?.length} vectors for ${request.length} texts`));
+    return data as number[][];
+  });
 
-export async function embed(env: Env, texts: string[]): Promise<number[][]> {
-  const vectors: number[][] = [];
-  for (const request of embedRequests(texts)) vectors.push(...(await embedRequest(env, request)));
-  return vectors;
-}
+export const embed = (texts: string[]) =>
+  Effect.map(Effect.forEach(embedRequests(texts), embedRequest), (parts) => parts.flat());

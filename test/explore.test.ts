@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { Env } from "../src/env";
 import { exploreData, renderExplore, type ExploreSort } from "../src/explore";
 import { normalizeHandle } from "../src/pipeline";
+import { runApp } from "../src/runtime";
 import { d1, migrated } from "./d1";
 
 let db: Database;
@@ -23,7 +24,7 @@ function mention(videoId: string, handle: string, firstSeen: number, lastSeen = 
   ).run(nextId++, videoId, handle, normalizeHandle(handle), `post by ${handle}`, firstSeen, lastSeen, firstSeen, quote ? firstSeen : null, quote);
 }
 
-const explore = (sort: ExploreSort = "newest") => exploreData({ DB: d1(db) } as unknown as Env, theo, [theo, prime], sort);
+const explore = (sort: ExploreSort = "newest") => runApp({ DB: d1(db) } as unknown as Env, exploreData(theo, [theo, prime], sort));
 
 beforeEach(() => {
   db = migrated();

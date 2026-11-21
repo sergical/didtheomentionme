@@ -1,84 +1,67 @@
 import { describe, expect, test } from "bun:test";
-import { createRequire } from "node:module";
-import * as Sentry from "@sentry/cloudflare";
-import { chatSpan, frameAttributes, redactImages, sentryOptions, withFrameReference } from "../src/telemetry";
 import { isExpiredFrame } from "../src/retention";
+import { sqlSummary } from "../src/runtime";
+import { frameAttributes, redactImages, usageAttributes, workflowRootSpanId, workflowTraceId } from "../src/telemetry";
+import { errorEnvelope, otlpSpan, parseDsn, stackFrames } from "../src/telemetry/otlp";
 
-const require = createRequire(import.meta.resolve("@sentry/cloudflare"));
-const { instrumentWorkersAiClient } = require("@sentry/server-utils");
-// Workers isolate concurrent scopes with AsyncLocalStorage; without it, scopes of parallel frames leak into each other.
-require("@sentry/server-utils/no-diagnostic-channels").setAsyncLocalStorageAsyncContextStrategy();
-
-describe("frame telemetry", () => {
-  test("attaches references to existing concurrent AI spans and omits clef images", async () => {
-    const options = sentryOptions({} as Parameters<typeof sentryOptions>[0]);
-    const spans: ReturnType<typeof Sentry.spanToJSON>[] = [];
-    const { initAndBind } = require("@sentry/core");
-    const { ServerRuntimeClient } = require("@sentry/core/server");
-    const client = initAndBind(ServerRuntimeClient, { ...options, stackParser: () => [], dsn: "https://public@example.com/1", transport: () => ({ send: async () => ({}), flush: async () => true }) });
-    client.on("spanEnd", (span) => spans.push(Sentry.spanToJSON(span)));
-    const ai = instrumentWorkersAiClient({ run: async () => { await Promise.resolve(); return { answers: { frame: { noul: 0.9 } } }; } });
-    await Sentry.startSpan({ name: "test" }, async () => {
-      await Promise.all([390, 391].map((second) => withFrameReference({ videoId: "Ka0p5tUUmgg", second, size: "f640" }, () =>
-        ai.run("@cf/cloudflare/clef-flash", { state: "a post", images: [{ content_type: "image/jpeg", base64: "SECRET_IMAGE_BYTES" }], questions: { frame: { type: "noul", instructions: "is a post visible?" } } }),
-      )));
-    });
-    const models = spans.filter((span) => span.attributes["gen_ai.request.model"]);
-    expect(models).toHaveLength(2);
-    expect(models.map((span) => span.attributes["app.frame.second"]).sort()).toEqual([390, 391]);
-    for (const span of models) {
-      expect(span.attributes["app.frame.key"]).toBe(`videos/Ka0p5tUUmgg/f640/${span.attributes["app.frame.second"]}.jpg`);
-      const messages = String(span.attributes["gen_ai.input.messages"]);
-      expect(messages).toContain('"type":"evaluation"');
-      expect(messages).not.toContain("SECRET_IMAGE_BYTES");
-      expect(messages).not.toContain("images");
-    }
-    await client.close();
-  });
-
-  test("records the reader's OpenAI-style answer on one span before it ends", async () => {
-    const options = sentryOptions({} as Parameters<typeof sentryOptions>[0]);
-    const spans: ReturnType<typeof Sentry.spanToJSON>[] = [];
-    const { initAndBind } = require("@sentry/core");
-    const { ServerRuntimeClient } = require("@sentry/core/server");
-    const client = initAndBind(ServerRuntimeClient, { ...options, stackParser: () => [], dsn: "https://public@example.com/1", transport: () => ({ send: async () => ({}), flush: async () => true }) });
-    client.on("spanEnd", (span) => spans.push(Sentry.spanToJSON(span)));
-    const ai = instrumentWorkersAiClient({
-      run: async (_model: string, inputs: { messages: { content: { text?: string }[] }[] }) => {
-        await Promise.resolve();
-        return {
-          choices: [{ message: { role: "assistant", content: `posts in ${inputs.messages[0].content[0].text}` }, finish_reason: "stop" }],
-          usage: { prompt_tokens: 300, completion_tokens: 20 },
-        };
-      },
-    });
-    const model = "@cf/qwen/qwen3.8-27b";
-    await Sentry.startSpan({ name: "test" }, async () => {
-      await Promise.all([390, 391].map((second) => {
-        const inputs = { max_tokens: 1500, messages: [{ role: "user", content: [{ type: "text", text: `frame ${second}` }] }] };
-        return withFrameReference({ videoId: "Ka0p5tUUmgg", second, size: "f1920" }, () => chatSpan(model, inputs, () => ai.run(model, inputs)));
-      }));
-    });
-    const models = spans.filter((span) => span.attributes["gen_ai.request.model"]);
-    expect(models).toHaveLength(2);
-    for (const span of models) {
-      const second = span.attributes["app.frame.second"];
-      expect(span.attributes["sentry.op"]).toBe("gen_ai.chat");
-      expect(span.attributes["gen_ai.usage.total_tokens"]).toBe(320);
-      expect(JSON.parse(String(span.attributes["gen_ai.input.messages"]))[0].content[0].text).toBe(`frame ${second}`);
-      expect(JSON.parse(String(span.attributes["gen_ai.output.messages"]))).toEqual([
-        { role: "assistant", parts: [{ type: "text", content: `posts in frame ${second}` }], finish_reason: "stop" },
-      ]);
-    }
-    await client.close();
-  });
-
+describe("telemetry model", () => {
   test("replaces reader data URLs with the exact frame URL", () => {
     const attrs = frameAttributes({ videoId: "Ka0p5tUUmgg", second: 390, size: "f1920" });
     const result = redactImages('{"url":"data:image/jpeg;base64,AAAA"}', attrs["app.frame.url"]);
     expect(JSON.parse(result).url).toBe(attrs["app.frame.url"]);
     expect(attrs["app.frame.youtube_url"]).toEndWith("&t=390s");
     expect(redactImages("data:image/jpeg;base64,AAAA", undefined)).toBe("[image/jpeg, 0 KB]");
+  });
+
+  test("prices tokens with Cloudflare's list, and marks estimates", () => {
+    expect(usageAttributes("@cf/qwen/qwen3.8-27b", 1_000_000, 1_000_000)["gen_ai.cost.total_tokens"]).toBeCloseTo(0.45 + 3.2, 10);
+    expect(usageAttributes("@cf/baai/bge-m3", 100, 0, true)["app.tokens_estimated"]).toBe(true);
+    expect(usageAttributes("@cf/unknown/model", 100)["gen_ai.cost.total_tokens"]).toBeUndefined();
+  });
+
+  test("a Workflow instance gets the trace id the Sentry SDK gives it, and a stable root span id", async () => {
+    // The SDK hashes the instance id with SHA-1 and keeps 16 bytes.
+    expect(await workflowTraceId("abc")).toBe("a9993e364706816aba3e25717850c26c");
+    expect(await workflowRootSpanId("abc")).toMatch(/^[0-9a-f]{16}$/);
+    expect(await workflowRootSpanId("abc")).toBe(await workflowRootSpanId("abc"));
+  });
+
+  test("names a query span by its verb and tables, as the SDK does", () => {
+    expect(sqlSummary("SELECT m.id FROM mentions m JOIN videos v ON v.id = m.video_id")).toBe("SELECT mentions videos");
+    expect(sqlSummary("INSERT OR IGNORE INTO stale_vectors (a) SELECT b FROM mentions")).toBe("INSERT stale_vectors mentions");
+    expect(sqlSummary("UPDATE videos SET status = ?")).toBe("UPDATE videos");
+  });
+});
+
+describe("OTLP exporter", () => {
+  test("finds Sentry's OTLP and envelope endpoints in a DSN", () => {
+    expect(parseDsn("https://abc@o1.ingest.us.sentry.io/42")).toEqual({
+      key: "abc",
+      otlp: "https://o1.ingest.us.sentry.io/api/42/integration/otlp",
+      envelope: "https://o1.ingest.us.sentry.io/api/42/envelope/",
+    });
+  });
+
+  test("writes a span that lasts across invocations with its kept id, start and op", () => {
+    const span = otlpSpan({ traceId: "t".repeat(32), spanId: "s".repeat(16), parentSpanId: "p".repeat(16), name: "extract", op: "workflow.phase", startMs: 1000, endMs: 2500, failed: true, attributes: { "app.detector": "x-post", skip: undefined } });
+    expect(span).toMatchObject({ name: "extract", startTimeUnixNano: "1000000000", endTimeUnixNano: "2500000000", status: { code: 2 } });
+    expect(span.attributes.map((a) => a.key)).toEqual(["sentry.op", "sentry.description", "app.detector"]);
+  });
+
+  test("an error event carries the exception, its stack, the tags and the trace", () => {
+    const err = new Error("boom");
+    err.stack = "Error: boom\n    at inner (src/workflow.ts:10:5)\n    at outer (src/index.ts:20:3)";
+    const [header, item, event] = errorEnvelope(err, { "video.id": "abc" }, { traceId: "t".repeat(32), spanId: "s".repeat(16) } as never, 0).trim().split("\n").map((l) => JSON.parse(l));
+    expect(header.event_id).toBe(event.event_id);
+    expect(item).toEqual({ type: "event" });
+    expect(event.exception.values[0]).toMatchObject({ type: "Error", value: "boom" });
+    expect(event.exception.values[0].stacktrace.frames.map((f: { function: string }) => f.function)).toEqual(["outer", "inner"]);
+    expect(event.tags).toEqual({ "video.id": "abc" });
+    expect(event.contexts.trace).toEqual({ trace_id: "t".repeat(32), span_id: "s".repeat(16) });
+  });
+
+  test("reads stack lines without a function name", () => {
+    expect(stackFrames("Error\n    at src/index.ts:1:2")).toEqual([{ function: "?", filename: "src/index.ts", lineno: 1, colno: 2, in_app: true }]);
   });
 });
 

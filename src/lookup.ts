@@ -1,9 +1,9 @@
-import { logger, metrics } from "@sentry/cloudflare";
+import { Cause, Effect } from "effect";
 import { embed } from "./ai";
 import { getSource } from "./config";
-import type { Env } from "./env";
 import { overlap, sameHandle, sameLongPost, samePost, tokenize } from "./pipeline";
-import { step } from "./telemetry";
+import { annotate, span, sql, vectorize, type App } from "./runtime";
+import { errorMessage } from "./telemetry";
 import { fetchTweet, parseTweetId, type TweetInfo } from "./tweet";
 
 export interface LookupInput {
@@ -77,55 +77,58 @@ interface Row {
   published_at: string | null;
 }
 
-async function vectorMatches(env: Env, sourceId: string, text: string): Promise<number[]> {
-  const [vector] = await embed(env, [text]);
-  const { matches } = await step("vectorize.query", () => env.POSTS.query(vector, { topK: VECTOR_TOP_K }), { topK: VECTOR_TOP_K });
-  // Vector ids are `<videoId>:<mentionId>`.
-  const claimed = matches
-    .filter((m) => m.score >= VECTOR_MIN_SCORE)
-    .map((m) => m.id.split(":"))
-    .map(([videoId, mentionId]) => ({ id: Number(mentionId), videoId }))
-    .filter((c) => Number.isFinite(c.id));
-  if (claimed.length === 0) return [];
-  // SQLite can reuse the id of a deleted mention, so a stale vector may point at another video's row.
-  const { results } = await env.DB.prepare(
-    `SELECT m.id, m.video_id FROM mentions m JOIN videos v ON v.id = m.video_id
-     WHERE v.source = ? AND m.id IN (${claimed.map(() => "?").join(",")})`,
-  )
-    .bind(sourceId, ...claimed.map((c) => c.id))
-    .all<{ id: number; video_id: string }>();
-  const videoOf = new Map(results.map((r) => [r.id, r.video_id]));
-  return claimed.filter((c) => videoOf.get(c.id) === c.videoId).map((c) => c.id);
-}
+const vectorMatches = (sourceId: string, text: string) =>
+  Effect.gen(function* () {
+    const [vector] = yield* embed([text]);
+    const { matches } = yield* vectorize("query", VECTOR_TOP_K, (index) => index.query(vector, { topK: VECTOR_TOP_K }));
+    // Vector ids are `<videoId>:<mentionId>`.
+    const claimed = matches
+      .filter((m) => m.score >= VECTOR_MIN_SCORE)
+      .map((m) => m.id.split(":"))
+      .map(([videoId, mentionId]) => ({ id: Number(mentionId), videoId }))
+      .filter((c) => Number.isFinite(c.id));
+    if (claimed.length === 0) return [];
+    // SQLite can reuse the id of a deleted mention, so a stale vector may point at another video's row.
+    const results = yield* sql.all<{ id: number; video_id: string }>(
+      `SELECT m.id, m.video_id FROM mentions m JOIN videos v ON v.id = m.video_id
+       WHERE v.source = ? AND m.id IN (${claimed.map(() => "?").join(",")})`,
+      sourceId, ...claimed.map((c) => c.id),
+    );
+    const videoOf = new Map(results.map((r) => [r.id, r.video_id]));
+    return claimed.filter((c) => videoOf.get(c.id) === c.videoId).map((c) => c.id);
+  }).pipe(span("search by meaning", "function"));
 
 const queryTokens = (text: string) => {
   const words = text.replace(/https?:\/\/\S+/g, " ").split(/\s+/).filter(Boolean).slice(0, FTS_WORDS);
   return [...new Set(words.flatMap(tokenize))];
 };
 
-async function ftsMatches(env: Env, sourceId: string, text: string): Promise<number[]> {
-  const tokens = queryTokens(text);
-  if (tokens.length === 0) return [];
-  const { results } = await env.DB.prepare(
-    `SELECT m.id, m.text FROM mentions_fts JOIN mentions m ON m.id = mentions_fts.rowid JOIN videos v ON v.id = m.video_id
-     WHERE mentions_fts MATCH ? AND v.source = ? ORDER BY mentions_fts.rank LIMIT 20`,
-  )
-    .bind(tokens.map((t) => `"${t}"`).join(" OR "), sourceId)
-    .all<{ id: number; text: string }>();
-  return results.filter((r) => overlap(tokens, r.text) >= FTS_MIN_OVERLAP).map((r) => r.id);
-}
+const ftsMatches = (sourceId: string, text: string) =>
+  Effect.gen(function* () {
+    const tokens = queryTokens(text);
+    if (tokens.length === 0) return [];
+    const results = yield* sql.all<{ id: number; text: string }>(
+      `SELECT m.id, m.text FROM mentions_fts JOIN mentions m ON m.id = mentions_fts.rowid JOIN videos v ON v.id = m.video_id
+       WHERE mentions_fts MATCH ? AND v.source = ? ORDER BY mentions_fts.rank LIMIT 20`,
+      tokens.map((t) => `"${t}"`).join(" OR "), sourceId,
+    );
+    return results.filter((r) => overlap(tokens, r.text) >= FTS_MIN_OVERLAP).map((r) => r.id);
+  }).pipe(span("search by words", "function"));
 
 /** Mention ids whose text is like `text`, by meaning (Vectorize) or by shared words (FTS). */
-async function textMatches(env: Env, sourceId: string, text: string, embedText: string): Promise<Set<number>> {
-  const found = await Promise.all([
-    step("search by meaning", () => vectorMatches(env, sourceId, embedText)).catch((err) => {
-      logger.error("Vector search failed, so the lookup uses word search only", { error: String(err?.message ?? err) });
-      return [];
-    }),
-    step("search by words", () => ftsMatches(env, sourceId, text)),
-  ]);
-  return new Set(found.flat());
-}
+const textMatches = (sourceId: string, text: string, embedText: string) =>
+  Effect.gen(function* () {
+    const byMeaning = vectorMatches(sourceId, embedText).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("Vector search failed, so the lookup uses word search only").pipe(
+          Effect.annotateLogs({ error: errorMessage(Cause.squash(cause)) }),
+          Effect.as([] as number[]),
+        ),
+      ),
+    );
+    const found = yield* Effect.all([byMeaning, ftsMatches(sourceId, text)], { concurrency: 2 });
+    return new Set(found.flat());
+  });
 
 // x.com/i/status/<id> links have no handle.
 const PROFILE_URL = /(?:x|twitter)\.com\/@?(?!i\/)([A-Za-z0-9_]{1,15})(?:[/?#]|$)/i;
@@ -202,106 +205,97 @@ export function bestReadings(matches: Match[], quoted: Quoted[]): Match[] {
   });
 }
 
-async function quotedIn(env: Env, videoIds: string[]): Promise<Quoted[]> {
-  if (videoIds.length === 0) return [];
-  const { results } = await env.DB.prepare(
-    `SELECT video_id, text, read_aloud_at, quote FROM mentions
-     WHERE quote IS NOT NULL AND read_aloud_at IS NOT NULL AND video_id IN (SELECT value FROM json_each(?))`,
-  )
-    .bind(JSON.stringify([...new Set(videoIds)]))
-    .all<Quoted>();
-  return results;
-}
+const quotedIn = (videoIds: string[]) =>
+  videoIds.length === 0
+    ? Effect.succeed([] as Quoted[])
+    : sql.all<Quoted>(
+        `SELECT video_id, text, read_aloud_at, quote FROM mentions
+         WHERE quote IS NOT NULL AND read_aloud_at IS NOT NULL AND video_id IN (SELECT value FROM json_each(?))`,
+        JSON.stringify([...new Set(videoIds)]),
+      );
 
 /** One match per post, each with its best reading. */
-async function toMatches(env: Env, rows: Row[], exact: (r: Row) => boolean): Promise<Match[]> {
+const toMatches = (rows: Row[], exact: (r: Row) => boolean) => {
   const merged = mergeRepeats(rows.map((r) => toMatch(r, exact(r))));
-  return bestReadings(merged, await quotedIn(env, merged.map((m) => m.videoId)));
-}
+  return Effect.map(quotedIn(merged.map((m) => m.videoId)), (quoted) => bestReadings(merged, quoted));
+};
 
 const newestFirst = (a: Match, b: Match) =>
   (b.publishedAt ?? "").localeCompare(a.publishedAt ?? "") || a.firstSeen - b.firstSeen;
 
-export async function lookup(env: Env, input: LookupInput): Promise<LookupResult> {
+export const lookup = (input: LookupInput): Effect.Effect<LookupResult, LookupError, App> => {
   const kind = input.q?.trim() ? "text" : input.tweet.trim() ? "post" : "handle";
-  const result = await step("lookup", () => search(env, input), { "lookup.kind": kind, "lookup.source": input.source ?? "" });
-  metrics.count("lookup", 1, {
-    attributes: { "lookup.kind": kind, "lookup.source": result.source.id, "lookup.result": result.matches.length ? "found" : "none" },
+  return Effect.gen(function* () {
+    const result = yield* search(input);
+    const found = result.matches.length ? "found" : "none";
+    yield* annotate({ "lookup.result": found, "lookup.matches": result.matches.length });
+    return result;
+  }).pipe(span("lookup", "function", { "lookup.kind": kind, "lookup.source": input.source ?? "" }));
+};
+
+const search = (input: LookupInput) =>
+  Effect.gen(function* () {
+    const source = getSource(input.source);
+    if (!source) return yield* Effect.fail(new LookupError("Unknown source."));
+
+    const query = input.q?.trim().replace(/\s+/g, " ");
+    if (query) {
+      const tokens = queryTokens(query);
+      if (tokens.length < MIN_QUERY_WORDS) return yield* Effect.fail(new LookupError("Enter a few words from the post."));
+      const ids = yield* textMatches(source.id, query, query);
+      const matches = (yield* toMatches(yield* findMentions(source.id, { ids: [...ids] }), () => false))
+        .map((m) => ({ ...m, overlap: overlap(tokens, m.text) }))
+        .sort((a, b) => b.overlap - a.overlap || newestFirst(a, b));
+      return { source: { id: source.id, name: source.name }, handle: null, query, coverage: yield* coverage(source.id), matches } as LookupResult;
+    }
+
+    let tweet: TweetInfo | undefined;
+    let tweetError: string | undefined;
+    // People paste a post link into the handle box too.
+    const tweetUrl = input.tweet.trim() || (parseTweetId(input.handle) ? input.handle : "");
+    if (tweetUrl) {
+      const id = parseTweetId(tweetUrl);
+      if (!id) return yield* Effect.fail(new LookupError("That is not an x.com or twitter.com post URL."));
+      tweet = (yield* fetchTweet(id).pipe(span("fetch post", "function", { "post.id": id }))) ?? undefined;
+      if (!tweet) tweetError = "Could not fetch that post, so this search uses the handle only.";
+    }
+
+    // A post URL holds the author's handle, so the search still has a handle when the fetch fails.
+    const typed = parseHandle(input.handle);
+    const handle = (HANDLE.test(typed) ? typed : "") || tweet?.handle || parseHandle(tweetUrl);
+    if (!HANDLE.test(handle)) return yield* Effect.fail(new LookupError("Enter an X handle, for example @theo."));
+    const handleNorm = handle.toLowerCase();
+
+    const textMatchIds = tweet ? yield* textMatches(source.id, tweet.text, `@${tweet.handle}: ${tweet.text}`) : new Set<number>();
+    const rows = yield* findMentions(source.id, { handleNorm, ids: [...textMatchIds] });
+    const matches = (yield* toMatches(rows, (r) => r.handle_norm === handleNorm && textMatchIds.has(r.id)))
+      .sort((a, b) => Number(b.exact) - Number(a.exact) || newestFirst(a, b));
+
+    return { source: { id: source.id, name: source.name }, handle, coverage: yield* coverage(source.id), tweet, tweetError, matches } as LookupResult;
   });
-  return result;
-}
 
-async function search(env: Env, input: LookupInput): Promise<LookupResult> {
-  const source = getSource(input.source);
-  if (!source) throw new LookupError("Unknown source.");
-
-  const query = input.q?.trim().replace(/\s+/g, " ");
-  if (query) {
-    const tokens = queryTokens(query);
-    if (tokens.length < MIN_QUERY_WORDS) throw new LookupError("Enter a few words from the post.");
-    const ids = await textMatches(env, source.id, query, query);
-    const matches = (await toMatches(env, await findMentions(env, source.id, { ids: [...ids] }), () => false))
-      .map((m) => ({ ...m, overlap: overlap(tokens, m.text) }))
-      .sort((a, b) => b.overlap - a.overlap || newestFirst(a, b));
-    return { source: { id: source.id, name: source.name }, handle: null, query, coverage: await coverage(env, source.id), matches };
-  }
-
-  let tweet: TweetInfo | undefined;
-  let tweetError: string | undefined;
-  // People paste a post link into the handle box too.
-  const tweetUrl = input.tweet.trim() || (parseTweetId(input.handle) ? input.handle : "");
-  if (tweetUrl) {
-    const id = parseTweetId(tweetUrl);
-    if (!id) throw new LookupError("That is not an x.com or twitter.com post URL.");
-    tweet = (await step("fetch post", () => fetchTweet(id), { "post.id": id })) ?? undefined;
-    if (!tweet) tweetError = "Could not fetch that post, so this search uses the handle only.";
-  }
-
-  // A post URL holds the author's handle, so the search still has a handle when the fetch fails.
-  const typed = parseHandle(input.handle);
-  const handle = (HANDLE.test(typed) ? typed : "") || tweet?.handle || parseHandle(tweetUrl);
-  if (!HANDLE.test(handle)) throw new LookupError("Enter an X handle, for example @theo.");
-  const handleNorm = handle.toLowerCase();
-
-  const textMatchIds = tweet ? await textMatches(env, source.id, tweet.text, `@${tweet.handle}: ${tweet.text}`) : new Set<number>();
-  const rows = await findMentions(env, source.id, { handleNorm, ids: [...textMatchIds] });
-  const matches = (await toMatches(env, rows, (r) => r.handle_norm === handleNorm && textMatchIds.has(r.id)))
-    .sort((a, b) => Number(b.exact) - Number(a.exact) || newestFirst(a, b));
-
-  return {
-    source: { id: source.id, name: source.name },
-    handle,
-    coverage: await coverage(env, source.id),
-    tweet,
-    tweetError,
-    matches,
-  };
-}
-
-async function findMentions(env: Env, sourceId: string, by: { handleNorm?: string; ids: number[] }): Promise<Row[]> {
+const findMentions = (sourceId: string, by: { handleNorm?: string; ids: number[] }) => {
   const conditions = [];
   if (by.handleNorm) conditions.push("m.handle_norm = ?");
   if (by.ids.length) conditions.push(`m.id IN (${by.ids.map(() => "?").join(",")})`);
-  if (conditions.length === 0) return [];
-  const { results } = await env.DB.prepare(
+  if (conditions.length === 0) return Effect.succeed([] as Row[]);
+  return sql.all<Row>(
     `SELECT m.id, m.video_id, m.handle, m.handle_norm, m.display_name, m.text, m.first_seen, m.last_seen,
             m.frame_second, m.read_aloud_at, m.quote, v.title, v.published_at
      FROM mentions m JOIN videos v ON v.id = m.video_id
      WHERE v.source = ? AND (${conditions.join(" OR ")})`,
-  )
-    .bind(sourceId, ...(by.handleNorm ? [by.handleNorm] : []), ...by.ids)
-    .all<Row>();
-  return results;
-}
+    sourceId, ...(by.handleNorm ? [by.handleNorm] : []), ...by.ids,
+  );
+};
 
-export async function coverage(env: Env, sourceId: string): Promise<LookupResult["coverage"]> {
-  const row = await env.DB.prepare(
-    "SELECT COUNT(*) AS videos, MIN(published_at) AS 'from', MAX(published_at) AS 'to' FROM videos WHERE source = ? AND status = 'done'",
-  )
-    .bind(sourceId)
-    .first<LookupResult["coverage"]>();
-  return row ?? { videos: 0, from: null, to: null };
-}
+export const coverage = (sourceId: string) =>
+  Effect.map(
+    sql.first<LookupResult["coverage"]>(
+      "SELECT COUNT(*) AS videos, MIN(published_at) AS 'from', MAX(published_at) AS 'to' FROM videos WHERE source = ? AND status = 'done'",
+      sourceId,
+    ),
+    (row) => row ?? { videos: 0, from: null, to: null },
+  );
 
 const toMatch = (r: Row, exact: boolean): Match => ({
   videoId: r.video_id,

@@ -29,6 +29,7 @@ const otlpValue = (v: OtlpValue) => v.stringValue ?? (v.intValue !== undefined ?
 const otlpAttributes = (list: { key: string; value: OtlpValue }[] = []) => Object.fromEntries(list.map((a) => [a.key, otlpValue(a.value)]));
 
 let current: Capture | undefined;
+let latency = 0;
 const original = globalThis.fetch;
 // Effect's fetch client reads `fetch` once, so one stand-in stays and sends to the current capture.
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -36,6 +37,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const request = new Request(input, init);
   if (!sent || !request.url.includes("/api/")) return original(input, init);
   const body = await request.text();
+  // Sentry answers after `latency`, and only then does the capture hold the data.
+  await new Promise((resolve) => setTimeout(resolve, latency));
   const url = request.url;
   if (url.endsWith("/v1/traces")) {
     for (const rs of JSON.parse(body).resourceSpans) for (const ss of rs.scopeSpans) for (const s of ss.spans) {
@@ -54,9 +57,10 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 /** Captures what the OTLP exporter sends to Sentry until `restore`. */
-export function captureOtlp(): Capture & { restore: () => void } {
+export function captureOtlp(options: { latencyMs?: number } = {}): Capture & { restore: () => void } {
   const sent = capture();
   current = sent;
+  latency = options.latencyMs ?? 0;
   return { ...sent, restore: () => { if (current === sent) current = undefined; } };
 }
 

@@ -4,3 +4,4 @@ node_modules
 experiments/data
 __pycache__
 docs/demo.md
+.alchemy/

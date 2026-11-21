@@ -8,23 +8,23 @@ type Parent = { traceId: string; spanId: string };
 
 /**
  * Durable steps whose bodies are Effects. A Workflow replays its `run` code after each restart, so only step bodies,
- * which run once, make spans and logs. A span that covers several steps, like a phase or the whole run, is written
+ * which run once, make spans and logs. A step ends only after its telemetry is sent: Workflows does not wait for
+ * `waitUntil` work, and in production that lost the spans each step ends last. A span that covers several steps, like a phase or the whole run, is written
  * by its last step with the id and start time its first step saved.
  */
 export class Steps {
   private constructor(
     private readonly env: Env,
     private readonly step: WorkflowStep,
-    private readonly waitUntil: (promise: Promise<unknown>) => void,
     readonly parent: Parent,
   ) {}
 
-  static async start(env: Env, step: WorkflowStep, instanceId: string, waitUntil: (promise: Promise<unknown>) => void): Promise<Steps> {
-    return new Steps(env, step, waitUntil, { traceId: await workflowTraceId(instanceId), spanId: await workflowRootSpanId(instanceId) });
+  static async start(env: Env, step: WorkflowStep, instanceId: string): Promise<Steps> {
+    return new Steps(env, step, { traceId: await workflowTraceId(instanceId), spanId: await workflowRootSpanId(instanceId) });
   }
 
   private under(parent: Parent) {
-    return new Steps(this.env, this.step, this.waitUntil, parent);
+    return new Steps(this.env, this.step, parent);
   }
 
   /** One step. Its Effect span has the phase as its parent, which a Worker restart keeps. */
@@ -34,7 +34,7 @@ export class Steps {
       runApp(this.env, body.pipe(
         span(name, "function", { "workflow.step.name": name, "cloudflare.workflow.attempt": ctx.attempt, ...attributes }),
         Effect.withParentSpan(parent),
-      ), this.waitUntil);
+      ));
     return this.step.do(name, config, callback as never) as Promise<A>;
   }
 
@@ -46,7 +46,7 @@ export class Steps {
       this.step.do(`${key}:end`, {}, () =>
         runApp(this.env, Effect.flatMap(Telemetry, (telemetry) =>
           telemetry.recordSpan({ ...this.parent, parentSpanId: this.parent.spanId, spanId, name, op, startMs, endMs: Date.now(), failed, attributes }),
-        ), this.waitUntil));
+        )));
     try {
       const result = await fn(this.under({ traceId: this.parent.traceId, spanId }));
       await end(false);

@@ -92,7 +92,7 @@ export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
   async run(event: WorkflowEvent<VideoParams>, step: WorkflowStep): Promise<void> {
     const { videoId, source } = event.payload;
     const { instanceId } = event;
-    const steps = await Steps.start(this.env, step, instanceId, (promise) => this.ctx.waitUntil(promise));
+    const steps = await Steps.start(this.env, step, instanceId);
     const run = { "video.id": videoId, "video.source": source, "workflow.instance_id": instanceId };
     // The run span's start, from the first step. A run whose first step fails still gets a span from mark-error.
     let startMs = Date.now();

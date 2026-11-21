@@ -8,11 +8,10 @@ const config = { retries: { limit: 1, delay: "1 second", backoff: "constant" } }
 
 test("each phase and the run are one span, sent once, across restarts at an event wait and after a phase's last step", async () => {
   const sent = captureOtlp();
-  const pending: Promise<unknown>[] = [];
   const env = { SENTRY_DSN: DSN } as unknown as Env;
   const step = engine(["phase:transcribe:end"]);
   const run = async () => {
-    const steps = await Steps.start(env, step as never, "replay-instance", (p) => void pending.push(p));
+    const steps = await Steps.start(env, step as never, "replay-instance");
     const startMs = await steps.do("mark-processing", config, Effect.sync(() => Date.now()));
     await steps.phase("extract", async (s) => {
       await s.do("extract-start", config, Effect.succeed(0));
@@ -27,13 +26,12 @@ test("each phase and the run are one span, sent once, across restarts at an even
   };
 
   // Suspends at the event, then before the transcribe phase's end step, then finishes.
+  // Each step now waits for its telemetry, so an invocation needs time to reach its suspension point.
   for (let restart = 0; restart < 2; restart++) {
     void run();
-    await settle();
+    await settle(500);
   }
   await run();
-  await Promise.all(pending);
-  await settle(1500);
   sent.restore();
 
   const byName = (name: string) => sent.spans.filter((s) => s.name === name);
@@ -50,4 +48,14 @@ test("each phase and the run are one span, sent once, across restarts at an even
   expect(byName("extract-done")[0].attributes["sentry.op"]).toBe("workflow.wait");
   expect(sent.spans.filter((s) => s.name.startsWith("phase:"))).toEqual([]);
   expect(new Set(sent.spans.map((s) => s.traceId)).size).toBe(1);
+});
+
+test("a step ends only after Sentry has its spans and logs", async () => {
+  const sent = captureOtlp({ latencyMs: 50 });
+  const steps = await Steps.start({ SENTRY_DSN: DSN } as unknown as Env, engine() as never, "flush-instance");
+  await steps.do("store-db", config, Effect.logInfo("Stored 1 mentions"));
+  // No waiting: Workflows may end the invocation as soon as the step returns.
+  sent.restore();
+  expect(sent.spans.map((s) => s.name)).toEqual(["store-db"]);
+  expect(sent.logs.map((l) => l.body)).toEqual(["Stored 1 mentions"]);
 });

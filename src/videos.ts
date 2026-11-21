@@ -65,7 +65,8 @@ const insertPending = (source: string, videos: VideoInfo[]) =>
 const decodeXml = (s: string) =>
   s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
 
-const discoverChannel = (source: Source, channelId: string) =>
+/** The videos in a channel's feed. A failure here is the feed's, not the database's. */
+const readFeed = (source: Source, channelId: string) =>
   Effect.gen(function* () {
     const res = yield* httpFetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
     if (!res.ok) return yield* Effect.fail(new Error(`RSS ${source.id} ${channelId}: ${res.status}`));
@@ -77,7 +78,7 @@ const discoverChannel = (source: Source, channelId: string) =>
       const publishedAt = entry.match(/<published>([^<]+)<\/published>/)?.[1] ?? null;
       videos.push({ id, title: title ? decodeXml(title) : null, publishedAt, duration: null });
     }
-    return yield* insertPending(source.id, videos);
+    return videos;
   });
 
 /** A feed that fails for this long is down, not rate limited, and becomes an Issue. */
@@ -113,10 +114,11 @@ export const discoverRss = (source: Source) =>
     let lastError: unknown;
     let downSince = 0;
     for (const channelId of source.youtubeChannelIds) {
-      // `exit`, so a rejected fetch, which is a defect, also moves on to the next channel.
-      const exit = yield* Effect.exit(discoverChannel(source, channelId));
+      // `exit`, so a rejected fetch, which is a defect, also moves on to the next channel. Only the feed gets the
+      // grace period: a database failure below is not caught here, so it is an Issue at once.
+      const exit = yield* Effect.exit(readFeed(source, channelId));
       if (Exit.isSuccess(exit)) {
-        inserted += exit.value;
+        inserted += yield* insertPending(source.id, exit.value);
         yield* feedOk(channelId);
         continue;
       }

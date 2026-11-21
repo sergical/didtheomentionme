@@ -75,3 +75,15 @@ test("a feed's videos go into D1 in one batch, not one query each", async () => 
     { id: "a1", status: "pending" }, { id: "a2", status: "done" }, { id: "a3", status: "pending" }, { id: "a4", status: "pending" }, { id: "a5", status: "pending" },
   ]);
 });
+
+test("a database failure is not a feed failure, so it fails discovery at once", async () => {
+  globalThis.fetch = (async () => new Response(feed)) as unknown as typeof fetch;
+  const db = migrated();
+  const binding = d1(db);
+  binding.batch = async () => {
+    throw new Error("D1 insert failed");
+  };
+  const source = { id: "theo", youtubeChannelIds: ["up"] } as never;
+  await expect(runApp({ DB: binding } as unknown as Env, discoverRss(source))).rejects.toThrow("D1 insert failed");
+  expect(db.query("SELECT * FROM feed_status").all()).toEqual([]);
+});

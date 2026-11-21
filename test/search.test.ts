@@ -133,5 +133,7 @@ test("a lookup counts the creator's coverage beside the search, not after it", a
   const coverage = queries.find((s) => String(s.attributes["db.query.text"]).startsWith("SELECT COUNT(*) AS videos"))!;
   const search = queries.filter((s) => s !== coverage);
   expect(search.length).toBeGreaterThan(0);
+  // The two overlap: each starts before the other ends.
   expect(coverage.startMs).toBeLessThan(search[0].endMs);
+  expect(search[0].startMs).toBeLessThan(coverage.endMs);
 });

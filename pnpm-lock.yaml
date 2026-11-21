@@ -11,12 +11,18 @@ importers:
       '@cloudflare/containers':
         specifier: ^0.3.0
         version: 0.3.7
+      '@effect/platform-browser':
+        specifier: 4.1.5
+        version: 4.1.5(effect@4.1.5)
       '@resvg/resvg-wasm':
         specifier: ^2.6.2
         version: 2.6.2
       effect:
         specifier: 4.1.5
         version: 4.1.5
+      foldkit:
+        specifier: 0.171.0
+        version: 0.171.0(@effect/platform-browser@4.1.5(effect@4.1.5))(effect@4.1.5)
     devDependencies:
       '@alchemy.run/cloudflare':
         specifier: 2.0.0-beta.87
@@ -30,6 +36,9 @@ importers:
       alchemy:
         specifier: 2.0.0-beta.87
         version: 2.0.0-beta.87(@effect/platform-node@4.1.5(effect@4.1.5)(redis@6.3.1))(effect@4.1.5)(ws@8.21.0)
+      rolldown:
+        specifier: 1.2.16
+        version: 1.2.16
       typescript:
         specifier: ^7.0.0
         version: 7.0.2
@@ -250,6 +259,11 @@ packages:
     resolution: {integrity: sha512-MqJlG+CVCgkIX7iPDo8hb4YlcEELYTlJFLg2Whp8TjBPieViNiiRAJR/5TtDApa38dzrTsMc69ul965Myagrdg==}
     peerDependencies:
       effect: ^4.1.2
+
+  '@effect/platform-browser@4.1.5':
+    resolution: {integrity: sha512-48wRnowGMrUtcF8A0xlqPh6HY/01NTYoA9HNwqGRLNGUXbQHbN97zhr6+qvsxJ4seHipjLXazegSwMkUHarPdQ==}
+    peerDependencies:
+      effect: ^4.1.5
 
   '@effect/platform-node-shared@4.1.5':
     resolution: {integrity: sha512-JzlrYe4uKaBFTWihBRXo2pDjkUVB39kQpKdGfXdbp7Co5sKT8hbcjOmdB5pg/WOYESdGTddd3fxD4lwlZELbZQ==}
@@ -964,6 +978,10 @@ packages:
   emoji-regex@10.6.0:
     resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
 
+  entities@9.0.0:
+    resolution: {integrity: sha512-oJFNDJg3kTPwAD1cNn2+WmUq4wFoo09npc3Ydf1D7ED4smRiWrsKnaLxykrTWgyGEcusc87P5dxlAleol9kpkg==}
+    engines: {node: '>=20.19.0'}
+
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
 
@@ -987,6 +1005,13 @@ packages:
 
   fflate@0.8.3:
     resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
+
+  foldkit@0.171.0:
+    resolution: {integrity: sha512-85T5T69XJd8S6hcjU9d8uXje8UmPf+WIvQvQVYyQvJYPo3L8iLl+W62Req7PxOiQtCw0AuSNPJfiyy+A1OBucA==}
+    engines: {node: '>=20.19.0'}
+    peerDependencies:
+      '@effect/platform-browser': ~4.1.0
+      effect: ~4.1.0
 
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
@@ -1020,6 +1045,9 @@ packages:
   modern-tar@0.8.6:
     resolution: {integrity: sha512-LYSks0tNVqbtez/9OB0YFP6qLRSqkdAxJWOQpVaR67lNTbj2zNLyYpowkRMia5lXLCZKzxwoxkxH2MbbBR2aEg==}
     engines: {node: '>=18.0.0'}
+
+  parse5@8.1.1:
+    resolution: {integrity: sha512-EcR/6WDcU7b2N3vQSxKALCk9lXGtUMQxXio008OEMBE0kavu/7JLfBEeFPzi43nMqVDSbEn3QCK+BMCc9zO//w==}
 
   path-to-regexp@6.3.0:
     resolution: {integrity: sha512-Yhpw4T9C6hPpgPeA28us07OJeqZ5EzQTkbfwuhsUg0c237RomFoETJgmp2sa3F/41gfLE6G5cqcYwznmeEeOlQ==}
@@ -1345,6 +1373,10 @@ snapshots:
     dependencies:
       '@distilled.cloud/aws4signer': 1.0.0-rc.20(effect@4.1.5)
       '@distilled.cloud/core': 1.0.0-rc.20(effect@4.1.5)
+      effect: 4.1.5
+
+  '@effect/platform-browser@4.1.5(effect@4.1.5)':
+    dependencies:
       effect: 4.1.5
 
   '@effect/platform-node-shared@4.1.5(effect@4.1.5)':
@@ -1778,6 +1810,8 @@ snapshots:
 
   emoji-regex@10.6.0: {}
 
+  entities@9.0.0: {}
+
   error-stack-parser-es@1.0.5: {}
 
   esbuild@0.28.2:
@@ -1817,6 +1851,12 @@ snapshots:
 
   fflate@0.8.3: {}
 
+  foldkit@0.171.0(@effect/platform-browser@4.1.5(effect@4.1.5))(effect@4.1.5):
+    dependencies:
+      '@effect/platform-browser': 4.1.5(effect@4.1.5)
+      effect: 4.1.5
+      parse5: 8.1.1
+
   fsevents@2.3.3:
     optional: true
 
@@ -1846,6 +1886,10 @@ snapshots:
       - utf-8-validate
 
   modern-tar@0.8.6: {}
+
+  parse5@8.1.1:
+    dependencies:
+      entities: 9.0.0
 
   path-to-regexp@6.3.0: {}
 

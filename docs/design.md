@@ -256,6 +256,18 @@ time links (one per time, plus "Read aloud" to the read-aloud second) to
 `https://www.youtube.com/watch?v=<id>&t=<seconds>s`, video title and date, the post as read from
 screen (query words marked in a text search), and, if read aloud, the time link and the quote.
 
+The lookup and explore pages are one [Foldkit](https://foldkit.dev) app in `src/ui/`. The Worker renders the views to
+HTML (`src/ui/render.ts`) and puts the page data in the page as JSON. The browser script (`src/ui/client.ts`) then
+hydrates that HTML: it takes over the elements the server made, without drawing them again. Everything that runs in the
+browser is in the app's update (`src/ui/app.ts`) or in one mount for the browser events (`src/ui/behaviors.ts`):
+copy and share, tab focus, the busy state of a search, the picker's outside click and Escape, and the view transition
+rule. With no script, the page still works: the forms, the tabs and the links are plain HTML.
+
+The deploy builds the script with rolldown (`scripts/client.ts`) into `dist/client/app-<hash>.js`, which the Worker
+serves as a static asset with a one-year cache. The same hash goes into the Worker bundle as `__CLIENT_BUILD__`, so a
+page names the script of its own deploy. A page from an older deploy finds no script and stays plain HTML. The script is
+381 KB minified, 122 KB gzipped, most of it Effect, which Foldkit runs on.
+
 ## Not in v1
 
 Alerts, transcript-only mentions (the creator names a post that is never on screen), clairic for post dates

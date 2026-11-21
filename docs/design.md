@@ -5,8 +5,9 @@ The app answers from an index of the creator's videos from the last 30 days.
 
 Deployed at https://didtheomention.me (also https://didtheomentionme.s-a62.workers.dev) with Alchemy (`alchemy.run.ts`,
 `pnpm deploy`). Check the Cloudflare account before you deploy. Alchemy keeps its state in `.alchemy/` (not in git);
-`--adopt` lets a deploy without that state take over the live resources by name. The container image builds on every
-deploy, and Cloudflare rolls it out only when its content changes. To undo a bad Worker deploy:
+`--adopt` lets a deploy without that state take over the live resources by name. A deploy builds and rolls out the
+container image only when its build inputs change, so an unchanged Dockerfile does not pick up a newer yt-dlp; to get
+one, change the `pip install` line (for example pin the new yt-dlp version), so Docker rebuilds that layer. To undo a bad Worker deploy:
 `pnpm exec wrangler rollback --name didtheomentionme`.
 
 The model choices come from experiments recorded in `experiments/` (one 41 min video, hand-labeled):

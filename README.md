@@ -39,7 +39,7 @@ To deploy your own copy:
 1. Connect Cloudflare: `pnpm exec alchemy profile edit --add Cloudflare`, or set `CLOUDFLARE_ACCOUNT_ID` and
    `CLOUDFLARE_API_TOKEN`.
    Docker must run, because the deploy builds the container image.
-2. Run `pnpm plan`, then `pnpm deploy`. [Alchemy](https://alchemy.run) creates or adopts every resource in
+2. Run `pnpm plan`, then `pnpm deploy` (both use the stage `prod`). [Alchemy](https://alchemy.run) creates or adopts every resource in
    `alchemy.run.ts` (Worker, D1 with its migrations, R2, Vectorize, Workflow, container), and applies new migrations.
    `--adopt` takes over resources that exist without Alchemy state, so a deploy also works from a new checkout.
 3. Set the secret `INTERNAL_TOKEN` for the admin routes: `pnpm exec wrangler secret put INTERNAL_TOKEN --name

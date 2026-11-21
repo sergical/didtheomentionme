@@ -4,8 +4,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "plan": "alchemy plan --adopt --stage prod",
-    "deploy": "alchemy deploy --adopt --stage prod",
+    "plan": "ALCHEMY_STAGE=prod alchemy plan --adopt",
+    "deploy": "ALCHEMY_STAGE=prod alchemy deploy --adopt",
+    "dev": "ALCHEMY_STAGE=dev alchemy dev",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

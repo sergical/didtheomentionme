@@ -4,7 +4,8 @@ Did a creator (Theo) show or read your X post in a video? A visitor enters an X 
 The app answers from an index of the creator's videos from the last 30 days.
 
 Deployed at https://didtheomention.me (also https://didtheomentionme.s-a62.workers.dev) with Alchemy (`alchemy.run.ts`,
-`pnpm deploy`). Check the Cloudflare account before you deploy. Alchemy keeps its state in `.alchemy/` (not in git);
+`pnpm deploy`, stage `prod`). Check the Cloudflare account before you deploy. Only the stage `prod` uses the live
+names and the custom domain; `pnpm dev` (stage `dev`) gets resources of its own. Alchemy keeps its state in `.alchemy/` (not in git);
 `--adopt` lets a deploy without that state take over the live resources by name. A deploy builds and rolls out the
 container image only when its build inputs change, so an unchanged Dockerfile does not pick up a newer yt-dlp; to get
 one, change the `pip install` line (for example pin the new yt-dlp version), so Docker rebuilds that layer. To undo a bad Worker deploy:

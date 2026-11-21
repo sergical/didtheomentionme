@@ -1,13 +1,14 @@
-import { logger, withSentry } from "@sentry/cloudflare";
-import { DEFAULT_SOURCE, SOURCES, getSource } from "./config";
+import { Cause, Effect } from "effect";
 import { authorized } from "./auth";
+import { DEFAULT_SOURCE, SOURCES, getSource } from "./config";
 import type { Env } from "./env";
-import { LookupError, coverage, lookup } from "./lookup";
-import { renderPage } from "./page";
 import { exploreData, renderExplore } from "./explore";
-import { socialImage } from "./social";
+import { coverage, lookup } from "./lookup";
+import { renderPage } from "./page";
 import { expireFrames, largeFrame } from "./retention";
-import { sentryOptions, step } from "./telemetry";
+import { annotate, r2, runApp, span, type App } from "./runtime";
+import { socialImage } from "./social";
+import { Telemetry, errorMessage } from "./telemetry";
 import { backfill, destroyContainer, discoverRss, processNow, startPending } from "./videos";
 
 export { ContainerProxy } from "@cloudflare/containers";
@@ -16,121 +17,126 @@ export { VideoWorkflow } from "./workflow";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-async function frame(env: Env, videoId: string, second: string, size: "f640" | "f1920" = "f1920"): Promise<Response> {
-  const object = size === "f640" ? await env.BUCKET.get(`videos/${videoId}/f640/${second}.jpg`) : await largeFrame(env.BUCKET, videoId, second);
-  if (!object) return new Response("not found", { status: 404 });
-  return new Response(object.body, {
-    headers: {
-      "content-type": "image/jpeg",
-      "cache-control": "public, max-age=604800",
-      etag: object.httpEtag,
-    },
+const frame = (videoId: string, second: string, size: "f640" | "f1920") =>
+  Effect.gen(function* () {
+    const smallKey = `videos/${videoId}/f640/${second}.jpg`;
+    const object = size === "f640" ? yield* r2("GetObject", smallKey, (bucket) => bucket.get(smallKey)) : yield* largeFrame(videoId, second);
+    if (!object) return new Response("not found", { status: 404 });
+    return new Response(object.body, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=604800", etag: object.httpEtag } });
   });
-}
 
-async function admin(request: Request, env: Env, url: URL): Promise<Response> {
-  const source = getSource(url.searchParams.get("source"));
-  if (!source) return Response.json({ error: "unknown source" }, { status: 400 });
-
-  if (url.pathname === "/admin/backfill") {
-    const days = Number(url.searchParams.get("days") ?? 30);
-    if (!Number.isFinite(days) || days <= 0) return Response.json({ error: "bad days" }, { status: 400 });
-    return Response.json(await backfill(env, source, days));
-  }
-
-  const videoId = url.searchParams.get("v") ?? "";
-  if (!VIDEO_ID.test(videoId)) return Response.json({ error: "bad v" }, { status: 400 });
-  if (url.pathname === "/admin/reset") {
-    await destroyContainer(env, videoId);
-    return Response.json({ videoId, result: "destroyed" });
-  }
-  return Response.json({ videoId, result: await processNow(env, videoId, source.id) });
-}
-
-async function lookupRoutes(env: Env, url: URL): Promise<Response> {
-  const input = {
-    handle: url.searchParams.get("handle") ?? "",
-    tweet: url.searchParams.get("tweet") ?? "",
-    q: url.searchParams.get("q") ?? "",
-    source: url.searchParams.get("source"),
-  };
-  const asJson = url.pathname === "/api/lookup";
-  const empty = !input.handle.trim() && !input.tweet.trim() && !input.q.trim();
-  if (empty && asJson) {
-    return Response.json({ error: "handle, tweet or q is required" }, { status: 400 });
-  }
-
-  try {
-    if (asJson) return Response.json(await lookup(env, input));
-  } catch (err) {
-    if (!(err instanceof LookupError)) throw err;
-    return Response.json({ error: err.message }, { status: 400 });
-  }
-
-  const { source, sources } = await pageSources(env, input.source);
-  const page = { source, sources, input: { ...input, source: source.id } };
-  if (empty) {
-    return html(renderPage(page));
-  }
-  try {
-    return html(renderPage({ ...page, result: await lookup(env, page.input) }));
-  } catch (err) {
-    if (!(err instanceof LookupError)) throw err;
-    return html(renderPage({ ...page, error: err.message }), 400);
-  }
-}
+const admin = (url: URL) =>
+  Effect.gen(function* () {
+    const source = getSource(url.searchParams.get("source"));
+    if (!source) return Response.json({ error: "unknown source" }, { status: 400 });
+    if (url.pathname === "/admin/backfill") {
+      const days = Number(url.searchParams.get("days") ?? 30);
+      if (!Number.isFinite(days) || days <= 0) return Response.json({ error: "bad days" }, { status: 400 });
+      return Response.json(yield* backfill(source, days));
+    }
+    const videoId = url.searchParams.get("v") ?? "";
+    if (!VIDEO_ID.test(videoId)) return Response.json({ error: "bad v" }, { status: 400 });
+    if (url.pathname === "/admin/reset") {
+      yield* destroyContainer(videoId);
+      return Response.json({ videoId, result: "destroyed" });
+    }
+    return Response.json({ videoId, result: yield* processNow(videoId, source.id) });
+  });
 
 // Pages fall back to the default creator for an unknown `source`.
-async function pageSources(env: Env, requested: string | null) {
-  const { id } = getSource(requested) ?? getSource(DEFAULT_SOURCE)!;
-  const sources = await Promise.all(SOURCES.map(async (s) => ({ id: s.id, name: s.name, avatar: s.avatar, hue: s.hue, coverage: await coverage(env, s.id) })));
-  return { source: sources.find((s) => s.id === id)!, sources };
-}
+const pageSources = (requested: string | null) =>
+  Effect.gen(function* () {
+    const { id } = getSource(requested) ?? getSource(DEFAULT_SOURCE)!;
+    const sources = yield* Effect.forEach(SOURCES, (s) => Effect.map(coverage(s.id), (c) => ({ id: s.id, name: s.name, avatar: s.avatar, hue: s.hue, coverage: c })), { concurrency: "unbounded" });
+    return { source: sources.find((s) => s.id === id)!, sources };
+  });
 
-async function exploreRoute(env: Env, url: URL): Promise<Response> {
-  const { source, sources } = await pageSources(env, url.searchParams.get("source"));
-  const sort = url.searchParams.get("sort") === "posts" ? "posts" : "newest";
-  return html(renderExplore(await exploreData(env, source, sources, sort)));
-}
+const html = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 
-const html = (body: string, status = 200) =>
-  new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
-
-export default withSentry(sentryOptions, {
-  async fetch(request, env, ctx): Promise<Response> {
-    const url = new URL(request.url);
-    const { pathname } = url;
-
-    if (pathname.startsWith("/admin/")) {
-      if (!(await authorized(request, env))) return new Response("unauthorized", { status: 401 });
-      if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
-      if (["/admin/backfill", "/admin/process", "/admin/reset"].includes(pathname)) return admin(request, env, url);
-      return new Response("not found", { status: 404 });
+const lookupRoutes = (url: URL) =>
+  Effect.gen(function* () {
+    const input = { handle: url.searchParams.get("handle") ?? "", tweet: url.searchParams.get("tweet") ?? "", q: url.searchParams.get("q") ?? "", source: url.searchParams.get("source") };
+    const asJson = url.pathname === "/api/lookup";
+    const empty = !input.handle.trim() && !input.tweet.trim() && !input.q.trim();
+    if (empty && asJson) return Response.json({ error: "handle, tweet or q is required" }, { status: 400 });
+    if (asJson) {
+      const result = yield* Effect.result(lookup(input));
+      return result._tag === "Success" ? Response.json(result.success) : Response.json({ error: result.failure.message }, { status: 400 });
     }
+    const { source, sources } = yield* pageSources(input.source);
+    const page = { source, sources, input: { ...input, source: source.id } };
+    if (empty) return html(renderPage(page));
+    const result = yield* Effect.result(lookup(page.input));
+    return result._tag === "Success" ? html(renderPage({ ...page, result: result.success })) : html(renderPage({ ...page, error: result.failure.message }), 400);
+  });
 
-    if (request.method !== "GET" && request.method !== "HEAD") return new Response("method not allowed", { status: 405 });
+const exploreRoute = (url: URL) =>
+  Effect.gen(function* () {
+    const { source, sources } = yield* pageSources(url.searchParams.get("source"));
+    const sort = url.searchParams.get("sort") === "posts" ? "posts" : "newest";
+    return html(renderExplore(yield* exploreData(source, sources, sort)));
+  });
 
-    if (["/og.png", "/favicon.svg", "/apple-touch-icon.png"].includes(pathname)) return socialImage(env, url, ctx);
+/** The route a request goes to, and the Effect that answers it. */
+function route(request: Request, env: Env, url: URL, waitUntil: (p: Promise<unknown>) => void): [string, Effect.Effect<Response, unknown, App>] {
+  const { pathname } = url;
+  if (pathname.startsWith("/admin/")) {
+    return [pathname, Effect.gen(function* () {
+      if (!(yield* Effect.promise(() => authorized(request, env)))) return new Response("unauthorized", { status: 401 });
+      if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+      if (["/admin/backfill", "/admin/process", "/admin/reset"].includes(pathname)) return yield* admin(url);
+      return new Response("not found", { status: 404 });
+    })];
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") return [pathname, Effect.succeed(new Response("method not allowed", { status: 405 }))];
+  if (["/og.png", "/favicon.svg", "/apple-touch-icon.png"].includes(pathname)) return [pathname, socialImage(url, waitUntil)];
+  const frameMatch = pathname.match(/^\/frame\/([A-Za-z0-9_-]+)\/(\d+)\.jpg$/);
+  if (frameMatch) return ["/frame/:videoId/:second.jpg", frame(frameMatch[1], frameMatch[2], url.searchParams.get("size") === "640" ? "f640" : "f1920")];
+  if (pathname === "/" || pathname === "/api/lookup") return [pathname, lookupRoutes(url)];
+  if (pathname === "/explore") return [pathname, exploreRoute(url)];
+  return ["/*", Effect.succeed(new Response("not found", { status: 404 }))];
+}
 
-    const frameMatch = pathname.match(/^\/frame\/([A-Za-z0-9_-]+)\/(\d+)\.jpg$/);
-    if (frameMatch) return frame(env, frameMatch[1], frameMatch[2], url.searchParams.get("size") === "640" ? "f640" : "f1920");
-    if (pathname === "/" || pathname === "/api/lookup") return lookupRoutes(env, url);
-    if (pathname === "/explore") return exploreRoute(env, url);
-    return new Response("not found", { status: 404 });
-  },
+/** An error that escapes the handler is reported, then thrown, so the Worker answers 500. */
+const reported = <A, E, R>(effect: Effect.Effect<A, E, R>, attributes: Record<string, string>) =>
+  effect.pipe(Effect.tapCause((cause) => Effect.flatMap(Telemetry, (telemetry) => telemetry.reportError(Cause.squash(cause), attributes))));
 
-  async scheduled(controller, env, ctx): Promise<void> {
-    ctx.waitUntil(
-      (async () => {
-        if (controller.cron === "*/10 * * * *" && new Date(controller.scheduledTime).getUTCHours() === 0 && new Date(controller.scheduledTime).getUTCMinutes() < 10) {
-          await step("expire debug frames", () => expireFrames(env.BUCKET, env.DB, controller.scheduledTime));
-        }
-        const discovered = await Promise.allSettled(SOURCES.map((s) => step(`discover ${s.id}`, () => discoverRss(env, s))));
-        discovered.forEach((r, i) => {
-          if (r.status === "rejected") logger.error(logger.fmt`Discovery of ${SOURCES[i].id} failed`, { "video.source": SOURCES[i].id, error: String(r.reason?.message ?? r.reason) });
-        });
-        await step("start pending videos", () => startPending(env));
-      })(),
+const discover = (source: (typeof SOURCES)[number]) =>
+  discoverRss(source).pipe(Effect.catchCause((cause) =>
+    Effect.gen(function* () {
+      const err = Cause.squash(cause);
+      const telemetry = yield* Telemetry;
+      // Every channel of the creator failed, which a log alone would leave without an alert.
+      yield* telemetry.reportError(err, { "video.source": source.id });
+      yield* Effect.logError(`Discovery of ${source.id} failed`).pipe(Effect.annotateLogs({ "video.source": source.id, error: errorMessage(err) }));
+    })));
+
+export default {
+  fetch(request, env, ctx): Promise<Response> {
+    const url = new URL(request.url);
+    const [path, handler] = route(request, env, url, (p) => ctx.waitUntil(p));
+    const effect = handler.pipe(
+      Effect.tap((res) => annotate({ "http.response.status_code": res.status })),
+      span(`${request.method} ${path}`, "http.server", {
+        "http.request.method": request.method,
+        "http.route": path,
+        "url.path": url.pathname,
+        "url.query": url.search.slice(1) || undefined,
+      }, "server"),
     );
+    return runApp(env, reported(effect, { "http.route": path }), (p) => ctx.waitUntil(p));
   },
-} satisfies ExportedHandler<Env>);
+
+  scheduled(controller, env, ctx): Promise<void> {
+    const at = new Date(controller.scheduledTime);
+    const effect = Effect.gen(function* () {
+      if (controller.cron === "*/10 * * * *" && at.getUTCHours() === 0 && at.getUTCMinutes() < 10) {
+        const deleted = yield* expireFrames(controller.scheduledTime).pipe(span("expire debug frames", "function"));
+        yield* annotate({ "frames.expired": deleted });
+      }
+      yield* Effect.forEach(SOURCES, discover, { concurrency: "unbounded", discard: true });
+      yield* startPending;
+    }).pipe(span(`cron ${controller.cron}`, "faas.cron", { "faas.cron": controller.cron, "faas.trigger": "timer" }));
+    return runApp(env, reported(effect, { "faas.cron": controller.cron }), (p) => ctx.waitUntil(p));
+  },
+} satisfies ExportedHandler<Env>;

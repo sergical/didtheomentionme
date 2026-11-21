@@ -39,7 +39,8 @@ To deploy your own copy:
 1. Create the resources named in `wrangler.jsonc`: the D1 database, the R2 bucket, and the Vectorize index
    (1024 dimensions, cosine).
 2. Apply the migrations: `pnpm exec wrangler d1 migrations apply didtheomentionme --remote`.
-3. Set the secret `INTERNAL_TOKEN` for the admin routes. `SENTRY_DSN` is optional.
+3. Set the secret `INTERNAL_TOKEN` for the admin routes. `SENTRY_DSN` is optional: with it, traces, logs and Issues
+   go to that Sentry project over OTLP.
 4. Run `pnpm exec wrangler deploy`. To deploy Worker code without a new container image, add
    `--containers-rollout=none`.
 5. Fill the index: `POST /admin/backfill?source=theo&days=30` with `authorization: Bearer <INTERNAL_TOKEN>`.

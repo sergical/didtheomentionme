@@ -110,16 +110,30 @@ Bindings (`wrangler.jsonc`):
 - `AI`: Workers AI.
 - `VIDEO_WORKFLOW`: Workflow `video-workflow`, class `VideoWorkflow`.
 - Cron `*/10 * * * *`. Secret `INTERNAL_TOKEN`; without it every admin route returns 401. Export `ContainerProxy` for outbound interception.
-- Secret `SENTRY_DSN` (org `sergtech`, project `didtheomentionme`); without it Sentry is off. `src/telemetry.ts`:
-  - The fetch and cron handlers use `withSentry`; `VideoWorkflow` uses `instrumentWorkflowWithSentry`, so each
-    `step.do` is a span and the trace id comes from the instance id. D1 and R2 calls get spans from the SDK.
-  - Each model call is one `gen_ai.*` span from `modelSpan`: the model, `app.task` (for example "quote finder"), the
-    inputs and outputs (images, audio and vectors become a size note), the tokens, the audio minutes and the cost in
-    USD from the prices in `MODELS`. Update those prices when Workers AI pricing changes.
-  - The SDK also wraps `env.AI` by itself. Its spans have no cost, so `ignoreSpans` drops them by their full `@cf/…`
-    name; `modelSpan` names spans without that prefix.
+- Secret `SENTRY_DSN` (org `sergtech`, project `didtheomentionme`); without it telemetry is off. Optional var
+  `SENTRY_ENVIRONMENT` (default `production`). The app runs on Effect; `src/telemetry/`:
+  - App code uses `Effect.withSpan` (through `span` in `src/runtime.ts`) and `Effect.log` with annotations.
+    Effect's own OTLP tracer and logger (`effect/observability`) send them to Sentry's OTLP endpoints, which the DSN
+    gives. Each span gets `sentry.op` and `sentry.description`, which Sentry reads.
+  - Sentry takes no OTLP metrics and makes no Issues from OTLP. So the facts a metric would hold are span attributes
+    (for example `video.outcome` on the run span), and `Telemetry.reportError` posts one Sentry envelope per Issue,
+    with the trace id of the current span.
+  - D1, R2, Vectorize and fetch spans come from the helpers in `src/runtime.ts`, named as Sentry's SDKs name them.
+  - Each run of an Effect (`runApp`) gets its own scheduler. Workers can drop the timers of a finished request, and
+    Effect's default scheduler is shared by the isolate, so a request could hang another (it did in production).
+  - Each model call is one `gen_ai.*` span from `modelSpan` in `src/ai.ts`, with model, tokens (estimated for bge-m3),
+    cost in USD from `PRICES`, frame links, and inputs with images as the frame URL. Update `PRICES` when Workers AI
+    pricing changes.
+  - Workflow runs: `src/steps.ts`. Step bodies are Effects; `run` code replays after each restart, so only step
+    bodies make spans and logs. Each phase and the whole run (`video <id>`, op `workflow.run`, with the outcome and
+    counts) is one span, written by its last step with the id and start its first step kept. The trace id is the
+    SHA-1 of the instance id. The container's Python SDK continues the trace from the `sentry-trace` header.
+  - `test/pipeline-telemetry.test.ts` runs the real pipeline and checks what reaches Sentry.
+    `LIVE_DSN=... bun test test/live.test.ts` sends one fake run and one failed run to a real project.
   - Lookups have the spans `lookup`, `fetch post`, `search by meaning` (with `vectorize.query`) and `search by words`.
-    The cron has `discover <source>` and `start pending videos`.
+    The cron has `discover <source>` and `start pending videos`. A creator whose every feed fails is an Issue.
+  - Before this design, the Sentry SDK was compared with it on the same production video: the SDK lost the run's
+    last invocation (the root span, the `read` and `store` phases and 6 logs), while OTLP sent all of it.
 
 Routes:
 - `POST /admin/reset?v=<id>`: bearer `INTERNAL_TOKEN`; destroys the video's container. A running container
@@ -253,7 +267,6 @@ Verification used Wrangler through portless, containers disabled, with remote D1
 
 ### Frame telemetry
 
-The SDK creates each AI span. A `spanStart` hook adds `app.frame.key`, `app.frame.second`,
-`app.frame.url`, and `app.frame.youtube_url` from a call-local Sentry scope. Concurrent calls keep separate scopes.
-Reader image data URLs become the frame URL in `gen_ai.input.messages`. In SDK 11.10.0, clef-flash records
-only evaluation state and questions; its images never enter that attribute. No extra span is created.
+Each model span of a frame gets `app.frame.key`, `app.frame.second`, `app.frame.url`, and `app.frame.youtube_url`
+from `frameAttributes`, set when the span starts. Reader image data URLs become the frame URL in
+`gen_ai.input.messages`; clef-flash spans record its state and questions, never its image.

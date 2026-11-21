@@ -2,8 +2,9 @@ import { Resvg, initWasm } from "@resvg/resvg-wasm";
 import wasm from "@resvg/resvg-wasm/index_bg.wasm";
 import font from "./assets/inter.bin";
 import { getSource } from "./config";
-import type { Env } from "./env";
-import { LookupError, lookup } from "./lookup";
+import { Effect } from "effect";
+import { lookup } from "./lookup";
+import { httpFetch, span, type App } from "./runtime";
 import type { LookupResult, Match } from "./lookup";
 import { formatTime } from "./pipeline";
 import { largeFrame } from "./retention";
@@ -31,20 +32,19 @@ const dataUrl = (buffer: ArrayBuffer, type: string) => {
   return `data:${type};base64,${btoa(binary)}`;
 };
 
-async function frameImage(env: Env, match?: Match): Promise<string> {
-  if (!match) return "";
-  const path = match.frameUrl.match(/^\/frame\/([\w-]+)\/(\d+)\.jpg$/);
-  if (!path) return "";
-  const object = await largeFrame(env.BUCKET, path[1], path[2]);
-  return object ? dataUrl(await object.arrayBuffer(), "image/jpeg") : "";
-}
+const frameImage = (match?: Match) =>
+  Effect.gen(function* () {
+    const path = match?.frameUrl.match(/^\/frame\/([\w-]+)\/(\d+)\.jpg$/);
+    if (!path) return "";
+    const object = yield* largeFrame(path[1], path[2]);
+    return object ? dataUrl(yield* Effect.promise(() => object.arrayBuffer()), "image/jpeg") : "";
+  });
 
-async function avatarImage(url: string): Promise<string> {
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(2000), cf: { cacheTtl: 86400 } });
-    return response.ok ? dataUrl(await response.arrayBuffer(), "image/jpeg") : "";
-  } catch { return ""; }
-}
+const avatarImage = (url: string) =>
+  httpFetch(url, { signal: AbortSignal.timeout(2000), cf: { cacheTtl: 86400 } } as RequestInit).pipe(
+    Effect.flatMap((response) => (response.ok ? Effect.promise(() => response.arrayBuffer()).pipe(Effect.map((b) => dataUrl(b, "image/jpeg"))) : Effect.succeed(""))),
+    Effect.catchCause(() => Effect.succeed("")),
+  );
 
 const mockFrame = (accent: string, handle: string, found: boolean) => `<g transform="rotate(-4 869 262)">
 <rect x="719" y="192" width="300" height="140" rx="18" fill="#faf5fa"/>
@@ -93,26 +93,29 @@ ${frame ? `<image x="594" y="142" width="550" height="310" preserveAspectRatio="
 </g></svg>`;
 }
 
-export async function socialImage(env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
-  if (url.pathname === "/favicon.svg") return new Response(FAVICON, { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=604800" } });
-  const source = getSource(url.searchParams.get("source"));
-  if (!source) return new Response("unknown source", { status: 400 });
-  const input = { handle: url.searchParams.get("handle") ?? "", tweet: url.searchParams.get("tweet") ?? "", q: url.searchParams.get("q") ?? "", source: source.id };
-  if (input.handle.length > 512 || input.tweet.length > 2048 || input.q.length > 512) return new Response("query too long", { status: 400 });
-  const key = new Request(`${url.origin}${url.pathname}${resultPath(input, source.id).slice(1)}&v=8`);
-  const cache = await caches.open("social-v8");
-  const cached = await cache.match(key);
-  if (cached) return cached;
-  const apple = url.pathname === "/apple-touch-icon.png";
-  let result: LookupResult | undefined;
-  if (!apple && (input.handle.trim() || input.tweet.trim() || input.q.trim())) {
-    try { result = await lookup(env, input); }
-    catch (err) { if (err instanceof LookupError) return new Response(err.message, { status: 400 }); throw err; }
-  }
-  const first = result?.matches.find((m) => !result?.query || (m.overlap ?? 0) >= 0.75);
-  const [frame, avatar] = apple ? ["", ""] : await Promise.all([frameImage(env, first), avatarImage(source.avatar)]);
-  const bytes = await png(apple ? FAVICON : imageSvg(source.name, source.id === "prime" ? "#ffa766" : "#f58fb1", result, frame, avatar), apple ? 180 : 1200);
-  const response = new Response(new Uint8Array(bytes).buffer, { headers: { "content-type": "image/png", "cache-control": `public, max-age=${result ? 3600 : 86400}` } });
-  ctx.waitUntil(cache.put(key, response.clone()));
-  return response;
-}
+export const socialImage = (url: URL, waitUntil: (promise: Promise<unknown>) => void): Effect.Effect<Response, never, App> =>
+  Effect.gen(function* () {
+    if (url.pathname === "/favicon.svg") return new Response(FAVICON, { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=604800" } });
+    const source = getSource(url.searchParams.get("source"));
+    if (!source) return new Response("unknown source", { status: 400 });
+    const input = { handle: url.searchParams.get("handle") ?? "", tweet: url.searchParams.get("tweet") ?? "", q: url.searchParams.get("q") ?? "", source: source.id };
+    if (input.handle.length > 512 || input.tweet.length > 2048 || input.q.length > 512) return new Response("query too long", { status: 400 });
+    const key = new Request(`${url.origin}${url.pathname}${resultPath(input, source.id).slice(1)}&v=8`);
+    const cache = yield* Effect.promise(() => caches.open("social-v8"));
+    const cached = yield* Effect.promise(() => cache.match(key));
+    if (cached) return cached;
+    const apple = url.pathname === "/apple-touch-icon.png";
+    let result: LookupResult | undefined;
+    if (!apple && (input.handle.trim() || input.tweet.trim() || input.q.trim())) {
+      const found = yield* Effect.result(lookup(input));
+      if (found._tag === "Failure") return new Response(found.failure.message, { status: 400 });
+      result = found.success;
+    }
+    const first = result?.matches.find((m) => !result?.query || (m.overlap ?? 0) >= 0.75);
+    const [frame, avatar] = apple ? ["", ""] : yield* Effect.all([frameImage(first), avatarImage(source.avatar)], { concurrency: 2 });
+    const bytes = yield* Effect.promise(() => png(apple ? FAVICON : imageSvg(source.name, source.id === "prime" ? "#ffa766" : "#f58fb1", result, frame, avatar), apple ? 180 : 1200))
+      .pipe(span("render png", "function"));
+    const response = new Response(new Uint8Array(bytes).buffer, { headers: { "content-type": "image/png", "cache-control": `public, max-age=${result ? 3600 : 86400}` } });
+    waitUntil(cache.put(key, response.clone()));
+    return response;
+  });

@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Env } from "../src/env";
 import { d1, migrated } from "./d1";
 
-mock.module("@cloudflare/containers", () => ({ getContainer: () => ({}) }));
+mock.module("@cloudflare/containers", () => ({ Container: class {}, getContainer: () => ({}) }));
 const { lookup } = await import("../src/lookup");
+const { runApp } = await import("../src/runtime");
 const { startPending } = await import("../src/videos");
 
 let db: Database;
@@ -55,7 +56,7 @@ describe("text search", () => {
     video("theo1", "theo", "2026-09-01");
     for (let i = 1; i <= 25; i++) mention(i, "prime1", "someone", "typescript generics are hard to read");
   };
-  const theoOnly = (q: string) => lookup(env(), { handle: "", tweet: "", q, source: "theo" });
+  const theoOnly = (q: string) => runApp(env(), lookup({ handle: "", tweet: "", q, source: "theo" }));
 
   test("another creator's word hits do not crowd out the requested creator", async () => {
     crowded();
@@ -78,7 +79,7 @@ describe("text search", () => {
     mention(7, "theo1", "dev", "completely different words here");
     vectorIds = ["gone1:7"];
 
-    const result = await lookup(env(), { handle: "", tweet: "", q: "nothing shared at all", source: "theo" });
+    const result = await runApp(env(), lookup({ handle: "", tweet: "", q: "nothing shared at all", source: "theo" }));
     expect(result.matches).toEqual([]);
   });
 });
@@ -89,7 +90,7 @@ describe("post link in the handle field", () => {
     mention(1, "theo1", "AuthorName", "the post text");
     globalThis.fetch = mock(async () => Response.json({ text: "the post text", user: { screen_name: "AuthorName" } })) as never;
 
-    const result = await lookup(env(), { handle: "https://x.com/i/status/1234567890", tweet: "", source: "theo" });
+    const result = await runApp(env(), lookup({ handle: "https://x.com/i/status/1234567890", tweet: "", source: "theo" }));
     expect(result.handle).toBe("AuthorName");
     expect(result.matches[0]?.exact).toBe(true);
   });
@@ -103,7 +104,7 @@ describe("startPending", () => {
     video("old1", "theo", "2026-09-01", "pending");
     video("old2", "theo", "2026-08-01", "pending", "not ready yet, will retry", ago(31));
 
-    expect(await startPending(env())).toBe(2);
+    expect(await runApp(env(), startPending)).toBe(2);
     expect(started).toEqual(["old1", "old2"]);
   });
 });

@@ -1,7 +1,7 @@
 import { getContainer } from "@cloudflare/containers";
 import { Cause, Effect, Exit } from "effect";
 import { MAX_IN_FLIGHT, MAX_RETRIES, MIN_DURATION_SECONDS, RETRY_BASE_MINUTES, type Source } from "./config";
-import { Bindings, annotate, httpFetch, span, sql, traceHeaders } from "./runtime";
+import { Bindings, annotate, d1Batch, httpFetch, span, sql, traceHeaders } from "./runtime";
 import { errorMessage, workflowTraceId } from "./telemetry";
 
 export interface VideoInfo {
@@ -49,56 +49,90 @@ export const startRun = (videoId: string, instanceId: string) =>
 export const endRun = (instanceId: string, outcome: string, reason: string | null = null) =>
   sql.run("UPDATE video_runs SET outcome = ?, reason = ?, ended_at = ? WHERE instance_id = ? AND ended_at IS NULL", outcome, reason, now(), instanceId);
 
-/** Inserts an unknown video as pending. An existing row keeps its status. */
-const insertPending = (source: string, v: VideoInfo) =>
+const INSERT_PENDING = `INSERT INTO videos (id, source, title, published_at, duration, status, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT(id) DO NOTHING`;
+
+/**
+ * Inserts unknown videos as pending, in one batch, and returns how many were new. An existing row keeps its status.
+ * One INSERT per feed entry was an N+1 that Sentry flagged: about 15 to 30 sequential queries per channel.
+ */
+const insertPending = (source: string, videos: VideoInfo[]) =>
   Effect.map(
-    sql.run(
-      `INSERT INTO videos (id, source, title, published_at, duration, status, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT(id) DO NOTHING`,
-      v.id, source, v.title, isoOrNull(v.publishedAt), v.duration, now(),
-    ),
-    (result) => result.meta.changes > 0,
+    d1Batch(INSERT_PENDING, videos.map((v) => [v.id, source, v.title, isoOrNull(v.publishedAt), v.duration, now()])),
+    (results) => results.filter((result) => result.meta.changes > 0).length,
   );
 
 const decodeXml = (s: string) =>
   s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, "&");
 
-const discoverChannel = (source: Source, channelId: string) =>
+/** The videos in a channel's feed. A failure here is the feed's, not the database's. */
+const readFeed = (source: Source, channelId: string) =>
   Effect.gen(function* () {
     const res = yield* httpFetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
     if (!res.ok) return yield* Effect.fail(new Error(`RSS ${source.id} ${channelId}: ${res.status}`));
-    let inserted = 0;
+    const videos: VideoInfo[] = [];
     for (const entry of (yield* Effect.promise(() => res.text())).split("<entry>").slice(1)) {
       const id = entry.match(/<yt:videoId>([^<]+)<\/yt:videoId>/)?.[1];
       if (!id) continue;
       const title = entry.match(/<title>([^<]*)<\/title>/)?.[1];
       const publishedAt = entry.match(/<published>([^<]+)<\/published>/)?.[1] ?? null;
-      if (yield* insertPending(source.id, { id, title: title ? decodeXml(title) : null, publishedAt, duration: null })) inserted++;
+      videos.push({ id, title: title ? decodeXml(title) : null, publishedAt, duration: null });
     }
-    return inserted;
+    return videos;
   });
 
-/** One failing channel does not stop the others; it fails only when every channel failed. */
+/** A feed that fails for this long is down, not rate limited, and becomes an Issue. */
+export const FEED_DOWN_MS = 6 * 3_600_000;
+
+const feedOk = (channelId: string) =>
+  sql.run(
+    `INSERT INTO feed_status (channel_id, last_ok_at, failing_since, last_error) VALUES (?, ?, NULL, NULL)
+     ON CONFLICT(channel_id) DO UPDATE SET last_ok_at = excluded.last_ok_at, failing_since = NULL, last_error = NULL`,
+    channelId, now(),
+  );
+
+/** Records a failure, and returns since when the feed has failed without a success. */
+const feedFailed = (channelId: string, error: string) =>
+  Effect.gen(function* () {
+    yield* sql.run(
+      `INSERT INTO feed_status (channel_id, failing_since, last_error) VALUES (?, ?, ?)
+       ON CONFLICT(channel_id) DO UPDATE SET failing_since = COALESCE(failing_since, excluded.failing_since), last_error = excluded.last_error`,
+      channelId, now(), error,
+    );
+    const row = yield* sql.first<{ failing_since: string }>("SELECT failing_since FROM feed_status WHERE channel_id = ?", channelId);
+    return Date.parse(row?.failing_since ?? now());
+  });
+
+/**
+ * One failing channel does not stop the others. It fails only when every channel has failed for `FEED_DOWN_MS`:
+ * YouTube often answers 429 to Cloudflare's addresses for a while, and that alone is no reason for an Issue.
+ */
 export const discoverRss = (source: Source) =>
   Effect.gen(function* () {
     let inserted = 0;
     let failures = 0;
     let lastError: unknown;
+    let downSince = 0;
     for (const channelId of source.youtubeChannelIds) {
-      // `exit`, so a rejected fetch, which is a defect, also moves on to the next channel.
-      const exit = yield* Effect.exit(discoverChannel(source, channelId));
+      // `exit`, so a rejected fetch, which is a defect, also moves on to the next channel. Only the feed gets the
+      // grace period: a database failure below is not caught here, so it is an Issue at once.
+      const exit = yield* Effect.exit(readFeed(source, channelId));
       if (Exit.isSuccess(exit)) {
-        inserted += exit.value;
+        inserted += yield* insertPending(source.id, exit.value);
+        yield* feedOk(channelId);
         continue;
       }
       failures++;
       lastError = Cause.squash(exit.cause);
-      yield* Effect.logError(`RSS feed of channel ${channelId} failed`).pipe(
+      downSince = Math.max(downSince, yield* feedFailed(channelId, errorMessage(lastError).slice(0, 300)));
+      yield* Effect.logWarning(`RSS feed of channel ${channelId} failed`).pipe(
         Effect.annotateLogs({ "video.source": source.id, "youtube.channel_id": channelId, error: errorMessage(lastError) }),
       );
     }
     yield* annotate({ "videos.discovered": inserted, "videos.failed_channels": failures });
-    if (failures > 0 && failures === source.youtubeChannelIds.length) return yield* Effect.fail(lastError);
+    // `downSince` is the most recent start of a failing streak, so every channel has been down at least this long.
+    const allDown = failures > 0 && failures === source.youtubeChannelIds.length;
+    if (allDown && Date.now() - downSince >= FEED_DOWN_MS) return yield* Effect.fail(lastError);
     return inserted;
   }).pipe(span(`discover ${source.id}`, "function", { "video.source": source.id }));
 
@@ -124,15 +158,11 @@ export const backfill = (source: Source, days: number) =>
       videos.push(...(JSON.parse(body) as { videos: ListedVideo[] }).videos);
     }
     const cutoff = Date.now() - days * 86_400_000;
-    let inserted = 0;
-    for (const v of videos) {
+    const wanted = videos.filter((v) => {
       const published = v.publishedAt ? Date.parse(v.publishedAt) : NaN;
-      if (!(published >= cutoff)) continue;
-      if (v.duration != null && v.duration < MIN_DURATION_SECONDS) continue;
-      if (v.liveStatus === "is_live" || v.liveStatus === "is_upcoming") continue;
-      const added = yield* insertPending(source.id, { id: v.id, title: v.title ?? null, publishedAt: v.publishedAt ?? null, duration: v.duration ?? null });
-      if (added) inserted++;
-    }
+      return published >= cutoff && !(v.duration != null && v.duration < MIN_DURATION_SECONDS) && v.liveStatus !== "is_live" && v.liveStatus !== "is_upcoming";
+    });
+    const inserted = yield* insertPending(source.id, wanted.map((v) => ({ id: v.id, title: v.title ?? null, publishedAt: v.publishedAt ?? null, duration: v.duration ?? null })));
     return { listed: videos.length, inserted };
   }).pipe(Effect.ensuring(Effect.orDie(destroyContainer("admin"))), span("backfill", "function", { "video.source": source.id, days }));
 
@@ -212,7 +242,7 @@ export const reconcileProcessing = Effect.gen(function* () {
 
 export const processNow = (videoId: string, source: string) =>
   Effect.gen(function* () {
-    yield* insertPending(source, { id: videoId, title: null, publishedAt: null, duration: null });
+    yield* insertPending(source, [{ id: videoId, title: null, publishedAt: null, duration: null }]);
     const result = yield* startWorkflow(videoId, source);
     if (result === "started") yield* setStatus(videoId, "processing");
     return result;

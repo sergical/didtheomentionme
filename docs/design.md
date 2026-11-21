@@ -4,7 +4,8 @@ Did a creator (Theo) show or read your X post in a video? A visitor enters an X 
 The app answers from an index of the creator's videos from the last 30 days.
 
 Deployed at https://didtheomention.me (also https://didtheomentionme.s-a62.workers.dev) with Alchemy (`alchemy.run.ts`,
-`pnpm deploy`). Check the Cloudflare account before you deploy. Alchemy keeps its state in `.alchemy/` (not in git);
+`pnpm deploy`, stage `prod`). Check the Cloudflare account before you deploy. Only the stage `prod` uses the live
+names and the custom domain; `pnpm dev` (stage `dev`) gets resources of its own. Alchemy keeps its state in `.alchemy/` (not in git);
 `--adopt` lets a deploy without that state take over the live resources by name. A deploy builds and rolls out the
 container image only when its build inputs change, so an unchanged Dockerfile does not pick up a newer yt-dlp; to get
 one, change the `pip install` line (for example pin the new yt-dlp version), so Docker rebuilds that layer. To undo a bad Worker deploy:
@@ -148,7 +149,10 @@ Routes:
 - `GET /frame/<videoId>/<second>.jpg`: an f1920 frame from R2, cached. Add `?size=640` for the exact detection frame. The route accepts only a video ID and numeric second, never an arbitrary R2 key.
 - `GET /`: the lookup page. `GET /api/lookup`: the same data as JSON.
 
-Cron: for each channel of each source, read the YouTube RSS feed (a failing channel is logged and skipped), insert unknown videos as `pending`, then start workflows for
+Cron: for each channel of each source, read the YouTube RSS feed and insert its unknown videos as `pending` in one D1
+batch (one INSERT per entry was an N+1 that Sentry flagged). A failing channel is logged and skipped, and `feed_status`
+records its failing streak: YouTube often answers 429 to Cloudflare's addresses for a while, so a creator becomes an
+Issue only when all its feeds have failed for 6 hours (`FEED_DOWN_MS`). Then start workflows for
 pending videos (newest first) while fewer than `MAX_IN_FLIGHT = 3` are `processing`. Workflow instance id = video id (prefix `v` if it starts with `-`), then `_1`, `_2`, ... for each new attempt.
 A video whose workflow cannot start gets status `error`; the other videos still start.
 If an instance with that id exists, skip it.

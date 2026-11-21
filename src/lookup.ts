@@ -1,4 +1,4 @@
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Fiber } from "effect";
 import { embed } from "./ai";
 import { getSource } from "./config";
 import { overlap, sameHandle, sameLongPost, samePost, tokenize } from "./pipeline";
@@ -237,6 +237,8 @@ const search = (input: LookupInput) =>
   Effect.gen(function* () {
     const source = getSource(input.source);
     if (!source) return yield* Effect.fail(new LookupError("Unknown source."));
+    // The coverage count needs nothing from the search, so it runs beside it, not after it.
+    const covered = yield* Effect.forkChild(coverage(source.id));
 
     const query = input.q?.trim().replace(/\s+/g, " ");
     if (query) {
@@ -246,7 +248,7 @@ const search = (input: LookupInput) =>
       const matches = (yield* toMatches(yield* findMentions(source.id, { ids: [...ids] }), () => false))
         .map((m) => ({ ...m, overlap: overlap(tokens, m.text) }))
         .sort((a, b) => b.overlap - a.overlap || newestFirst(a, b));
-      return { source: { id: source.id, name: source.name }, handle: null, query, coverage: yield* coverage(source.id), matches } as LookupResult;
+      return { source: { id: source.id, name: source.name }, handle: null, query, coverage: yield* Fiber.join(covered), matches } as LookupResult;
     }
 
     let tweet: TweetInfo | undefined;
@@ -271,7 +273,7 @@ const search = (input: LookupInput) =>
     const matches = (yield* toMatches(rows, (r) => r.handle_norm === handleNorm && textMatchIds.has(r.id)))
       .sort((a, b) => Number(b.exact) - Number(a.exact) || newestFirst(a, b));
 
-    return { source: { id: source.id, name: source.name }, handle, coverage: yield* coverage(source.id), tweet, tweetError, matches } as LookupResult;
+    return { source: { id: source.id, name: source.name }, handle, coverage: yield* Fiber.join(covered), tweet, tweetError, matches } as LookupResult;
   });
 
 const findMentions = (sourceId: string, by: { handleNorm?: string; ids: number[] }) => {

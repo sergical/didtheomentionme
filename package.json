@@ -6,6 +6,7 @@
   "scripts": {
     "plan": "alchemy plan --adopt --stage prod",
     "deploy": "alchemy deploy --adopt --stage prod",
+    "dev": "alchemy dev --stage dev",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

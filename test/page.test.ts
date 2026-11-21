@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
-import { renderPage, type PageData } from "../src/page";
+import { Effect } from "effect";
+import type { PageData } from "../src/ui/model";
+import { renderPage as render } from "../src/ui/render";
 import { resultPath, shareTitle } from "../src/share";
+
+const renderPage = (page: PageData) => Effect.runPromise(render(page));
 
 const source = { id: "prime", name: "Prime", avatar: "https://example.com/avatar.jpg", hue: 55, coverage: { videos: 1, from: null, to: null } };
 const data: PageData = {
@@ -8,8 +12,8 @@ const data: PageData = {
   result: { source, handle: "theo", coverage: source.coverage, matches: [{ videoId: "abc", title: "Video <title>", publishedAt: null, handle: "@theo", displayName: null, text: "A post", firstSeen: 12, lastSeen: 20, times: [12, 40], frameUrl: "/frame/abc/12.jpg", exact: false, readAloud: { at: 14, quote: "A post", reading: "all" } }] },
 };
 
-test("all video entry points open a safe new tab with a screen reader hint", () => {
-  const html = renderPage(data);
+test("all video entry points open a safe new tab with a screen reader hint", async () => {
+  const html = await renderPage(data);
   const links = [...html.matchAll(/<a\b[^>]*href="https:\/\/www.youtube.com[^>]*>/g)];
   expect(links).toHaveLength(5);
   for (const [link] of links) {
@@ -20,9 +24,9 @@ test("all video entry points open a safe new tab with a screen reader hint", () 
   expect(html).toContain('id="new-tab-hint"');
 });
 
-test("result metadata and share controls use the same absolute result URL", () => {
-  const html = renderPage(data);
-  expect(html).toContain('data-url="https://didtheomention.me/?handle=theo&amp;source=prime"');
+test("result metadata and share controls use the same absolute result URL", async () => {
+  const html = await renderPage(data);
+  expect(html).toContain('href="https://x.com/intent/post?text=Prime+showed+%40theo+2+times.+Found+the+receipts.&amp;url=https%3A%2F%2Fdidtheomention.me%2F%3Fhandle%3Dtheo%26source%3Dprime"');
   expect(html).toContain('property="og:image" content="https://didtheomention.me/og.png?handle=theo&amp;source=prime"');
   expect(html).toContain('name="twitter:card" content="summary_large_image"');
   expect(html).toContain('Prime showed @theo 2 times.');
@@ -31,27 +35,27 @@ test("result metadata and share controls use the same absolute result URL", () =
   expect(shareTitle("Prime", data.result)).toBe("Prime showed @theo 2 times.");
 });
 
-test("post and text URLs preserve query characters and creator", () => {
+test("post and text URLs preserve query characters and creator", async () => {
   expect(resultPath({ handle: "", tweet: "https://x.com/a/status/123?x=1&y=2" }, "prime")).toBe("/?tweet=https%3A%2F%2Fx.com%2Fa%2Fstatus%2F123%3Fx%3D1%26y%3D2&source=prime");
   expect(resultPath({ handle: "", tweet: "", q: ' <script> & words ' }, "theo")).toBe("/?q=%3Cscript%3E+%26+words&source=theo");
 });
 
-test("a text search excerpt starts near the first matching word", () => {
+test("a text search excerpt starts near the first matching word", async () => {
   const match = { ...data.result!.matches[0], text: `${"filler words here ".repeat(10)}the needle is here`, overlap: 1 };
-  const html = renderPage({ ...data, input: { handle: "", tweet: "", q: "needle", source: "prime" }, result: { ...data.result!, query: "needle", matches: [match] } });
+  const html = await renderPage({ ...data, input: { handle: "", tweet: "", q: "needle", source: "prime" }, result: { ...data.result!, query: "needle", matches: [match] } });
   expect(html).toMatch(/<p class="excerpt">…[^<]{0,60}<mark>needle<\/mark> is here<\/p>/);
   expect(html).toContain('<span class="sr-only">On screen at </span>');
 });
 
-test("the verdict and the card say how much was read", () => {
+test("the verdict and the card say how much was read", async () => {
   const [first] = data.result!.matches;
-  const render = (...readings: ("all" | "part" | "comment" | null)[]) => renderPage({ ...data, result: { ...data.result!, matches: readings.map((reading, i) => ({
+  const renderReadings = (...readings: ("all" | "part" | "comment" | null)[]) => renderPage({ ...data, result: { ...data.result!, matches: readings.map((reading, i) => ({
     ...first, videoId: `v${i}`, readAloud: reading && { at: 14, quote: "Back to what they said", reading },
   })) } });
-  expect(render("part")).toContain("Prime showed your post and read part of it aloud.");
-  expect(render("part")).toContain("Prime read part of it aloud at");
-  expect(render("comment")).toContain("Prime showed your post and talked about it, but did not read it aloud.");
-  expect(render("comment")).toContain('<figure class="said comment">');
-  expect(render("all", "comment", null)).toContain("Prime showed 3 of your posts, read 1 aloud and talked about 1.");
-  expect(render(null, null)).toContain("Prime showed 2 of your posts, but did not read them aloud.");
+  expect(await renderReadings("part")).toContain("Prime showed your post and read part of it aloud.");
+  expect(await renderReadings("part")).toContain("Prime read part of it aloud at");
+  expect(await renderReadings("comment")).toContain("Prime showed your post and talked about it, but did not read it aloud.");
+  expect(await renderReadings("comment")).toContain('<figure class="said comment">');
+  expect(await renderReadings("all", "comment", null)).toContain("Prime showed 3 of your posts, read 1 aloud and talked about 1.");
+  expect(await renderReadings(null, null)).toContain("Prime showed 2 of your posts, but did not read them aloud.");
 });

@@ -2,12 +2,13 @@ import { Cause, Effect } from "effect";
 import { authorized } from "./auth";
 import { DEFAULT_SOURCE, SOURCES, getSource } from "./config";
 import type { Env } from "./env";
-import { exploreData, renderExplore } from "./explore";
+import { exploreData } from "./explore";
 import { coverage, lookup } from "./lookup";
-import { renderPage } from "./page";
 import { expireFrames, largeFrame } from "./retention";
 import { annotate, r2, runApp, span, type App } from "./runtime";
 import { socialImage } from "./social";
+import type { PageData } from "./ui/model";
+import { renderExplore, renderPage } from "./ui/render";
 import { Telemetry, errorMessage } from "./telemetry";
 import { backfill, destroyContainer, discoverRss, processNow, startPending } from "./videos";
 
@@ -69,8 +70,9 @@ const lookupRoutes = (url: URL) =>
     // The picker's counts and the lookup need nothing from each other, so they run at once.
     const [{ source, sources }, result] = yield* Effect.all([pageSources(input.source), empty ? Effect.succeed(undefined) : Effect.result(lookup(pageInput))], { concurrency: 2 });
     const page = { source, sources, input: pageInput };
-    if (!result) return html(renderPage(page));
-    return result._tag === "Success" ? html(renderPage({ ...page, result: result.success })) : html(renderPage({ ...page, error: result.failure.message }), 400);
+    const render = (data: PageData, status = 200) => Effect.map(renderPage(data).pipe(span("render page", "ui.render")), (body) => html(body, status));
+    if (!result) return yield* render(page);
+    return yield* (result._tag === "Success" ? render({ ...page, result: result.success }) : render({ ...page, error: result.failure.message }, 400));
   });
 
 const exploreRoute = (url: URL) =>
@@ -79,7 +81,7 @@ const exploreRoute = (url: URL) =>
     const sort = url.searchParams.get("sort") === "posts" ? "posts" : "newest";
     // The picker's counts and the page's numbers need nothing from each other, so they run at once.
     const [{ source, sources }, data] = yield* Effect.all([pageSources(requested), exploreData(pageSourceId(requested), sort)], { concurrency: 2 });
-    return html(renderExplore({ ...data, source, sources }));
+    return html(yield* renderExplore({ ...data, source, sources }).pipe(span("render explore page", "ui.render")));
   });
 
 /** The route a request goes to, and the Effect that answers it. */

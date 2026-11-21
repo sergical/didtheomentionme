@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Env } from "../src/env";
-import { exploreData, renderExplore, type ExploreSort } from "../src/explore";
+import { Effect } from "effect";
+import { exploreData, type ExploreSort } from "../src/explore";
+import { renderExplore } from "../src/ui/render";
 import { normalizeHandle } from "../src/pipeline";
 import { runApp } from "../src/runtime";
 import { d1, migrated } from "./d1";
@@ -82,7 +84,7 @@ describe("exploreData", () => {
 
 describe("renderExplore", () => {
   test("escapes post text and quotes, and says when a video has no posts", async () => {
-    const html = renderExplore(await explore());
+    const html = await Effect.runPromise(renderExplore(await explore()));
     expect(html).toContain("post by &lt;dev&gt;");
     expect(html).not.toContain("<dev>");
     expect(html).toContain("On screen for 3 min from");

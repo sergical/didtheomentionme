@@ -32,6 +32,7 @@ You need a Cloudflare account with Workers Paid (for Containers, Workflows and W
 pnpm install
 pnpm test          # bun test, on an in-memory SQLite copy of the D1 schema
 pnpm typecheck
+pnpm dev           # alchemy dev, on stage dev; restart it after a change in src/ui to rebuild the browser script
 ```
 
 To deploy your own copy:

@@ -1,6 +1,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Effect from "effect/Effect";
+import { CLIENT_DIR, buildClient } from "./scripts/client";
 
 /**
  * The Cloudflare resources of the app, for one stage. In the stage `prod`, every name is the name of a live resource,
@@ -11,7 +12,7 @@ import * as Effect from "effect/Effect";
  * The secrets INTERNAL_TOKEN, SENTRY_DSN and CONTAINER_SENTRY_DSN are set with `wrangler secret put`. Alchemy keeps
  * secrets that it does not manage.
  */
-const resources = (stage: string) => {
+const resources = (stage: string, clientBuild: string) => {
   const prod = stage === "prod";
   const named = (name: string) => (prod ? name : `${name}-${stage}`);
 
@@ -27,6 +28,10 @@ const resources = (stage: string) => {
   return Cloudflare.Worker("Worker", {
     name: named("didtheomentionme"),
     main: "./src/index.ts",
+    // The pages' browser script. The Worker answers every other path, because no other file is in the folder.
+    assets: CLIENT_DIR,
+    // The Worker names the script's file in each page; see src/ui/build.ts.
+    build: { input: { transform: { define: { __CLIENT_BUILD__: JSON.stringify(clientBuild) } } } },
     compatibility: { date: "2026-10-15", flags: ["nodejs_compat"] },
     observability: { enabled: true },
     workersDev: true,
@@ -50,8 +55,9 @@ export default Alchemy.Stack(
   "didtheomentionme",
   { providers: Cloudflare.providers(), state: Alchemy.localState() },
   Effect.gen(function* () {
+    const client = yield* Effect.promise(buildClient);
     // The stage Alchemy resolved, from --stage or ALCHEMY_STAGE, so the names always match it.
-    const worker = yield* resources(yield* Alchemy.Stage);
+    const worker = yield* resources(yield* Alchemy.Stage, client.build);
     return { url: worker.url };
   }),
 );

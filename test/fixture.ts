@@ -19,6 +19,7 @@ export const done = { state: "done", stage: "done", error: null, manifest };
 
 mock.module("@cloudflare/containers", () => ({
   Container: class {},
+  ContainerProxy: class {},
   getContainer: () => ({
     watchJob: async () => {},
     destroy: async () => {},
@@ -64,7 +65,8 @@ const ai = {
   },
 };
 
-export function env(dsn: string, environment?: string): Env {
+/** The bindings of one fake run. With `failProcessing`, every write of the `processing` status fails. */
+export function env(dsn: string, environment?: string, failProcessing = false): Env & { sqlite: ReturnType<typeof migrated> } {
   const objects = new Map<string, string | ArrayBuffer>();
   for (let s = 0; s < FRAMES; s++) {
     objects.set(`videos/${VIDEO}/f640/${s}.jpg`, new Uint8Array(s * 3).buffer as ArrayBuffer);
@@ -74,33 +76,48 @@ export function env(dsn: string, environment?: string): Env {
   objects.set(`videos/${VIDEO}/words.json`, JSON.stringify(words));
   const db = migrated();
   db.query("INSERT INTO videos (id, source, status, updated_at) VALUES (?, 'theo', 'pending', ?)").run(VIDEO, new Date().toISOString());
+  const binding = d1(db);
+  const prepare = binding.prepare;
+  binding.prepare = (sql: string) => {
+    const statement = prepare(sql);
+    if (!failProcessing || !sql.startsWith("UPDATE videos SET status")) return statement;
+    const bind = statement.bind;
+    statement.bind = (...values: unknown[]) => {
+      if (values[0] === "processing") statement.run = async () => { throw new Error("D1 unavailable"); };
+      return bind(...values);
+    };
+    return statement;
+  };
   return {
+    sqlite: db,
     SENTRY_DSN: dsn,
     SENTRY_ENVIRONMENT: environment,
     INTERNAL_TOKEN: "t",
-    DB: d1(db),
+    DB: binding,
     BUCKET: bucket(objects),
     AI: ai,
     POSTS: { query: async () => ({ matches: [] }), upsert: async () => ({}), deleteByIds: async () => ({}) },
     MEDIA: {},
     VIDEO_WORKFLOW: {},
-  } as unknown as Env;
+  } as unknown as Env & { sqlite: ReturnType<typeof migrated> };
 }
 
 /** Runs one video through the real pipeline: a first invocation that waits for the extract event, then a replay. */
-export async function runVideo(options: { dsn: string; environment?: string; job?: unknown; instanceId?: string }) {
+export async function runVideo(options: { dsn: string; environment?: string; job?: unknown; instanceId?: string; failProcessing?: boolean }) {
   const { job = done } = options;
   const pending: Promise<unknown>[] = [];
   const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException() {} };
   const Workflow = VideoPipeline as unknown as new (...args: unknown[]) => { run(event: unknown, step: unknown): Promise<void> };
   const step = engine([], { "extract-done": job });
   const event = { instanceId: options.instanceId ?? `${VIDEO}_run`, payload: { videoId: VIDEO, source: "theo" }, timestamp: new Date() };
-  const e = env(options.dsn, options.environment);
+  const e = env(options.dsn, options.environment, options.failProcessing);
   // The first invocation suspends at the extract event; the second replays the cached steps and finishes.
-  void new Workflow(ctx, e).run(event, step);
+  // A run that fails before the event ends in this first invocation, so its rejection is expected.
+  void new Workflow(ctx, e).run(event, step).catch(() => {});
   await settle(300);
-  await new Workflow(ctx, e).run(event, step).catch(() => {});
+  const result = await new Workflow(ctx, e).run(event, step).then(() => ({ completed: true as const }), (error: unknown) => ({ completed: false as const, error }));
   await Promise.all(pending);
   await settle(1500);
+  return { ...result, db: e.sqlite };
 }
 

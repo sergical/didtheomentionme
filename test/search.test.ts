@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Env } from "../src/env";
 import { d1, migrated } from "./d1";
 
-mock.module("@cloudflare/containers", () => ({ Container: class {}, getContainer: () => ({}) }));
+mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
 const { lookup } = await import("../src/lookup");
 const { runApp } = await import("../src/runtime");
 const { startPending } = await import("../src/videos");

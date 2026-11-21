@@ -1,17 +1,36 @@
-import { describe, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { VIDEO, runVideo } from "./fixture";
 
 /**
- * Sends one fake video run, and one failed run, to a real Sentry project, in the environment `live-check`. Runs
- * only with `LIVE_DSN`. The failed run makes a real Issue.
+ * Sends one fake video run and one failed run to a real Sentry project, in the environment `live-check`, and checks
+ * that Sentry accepted the traces, the logs and the Issue. Runs only with `LIVE_DSN`. The failed run makes a real Issue.
  */
 describe.skipIf(!process.env.LIVE_DSN)("live check", () => {
-  const dsn = process.env.LIVE_DSN!;
-  const stamp = Date.now().toString(36);
-  test("sends a run and a failed run", async () => {
-    await runVideo({ dsn, environment: "live-check", instanceId: `${VIDEO}_live_${stamp}` });
+  test("Sentry accepts a run's traces and logs, and a failed run's Issue", async () => {
+    const dsn = process.env.LIVE_DSN!;
+    const stamp = Date.now().toString(36);
+    const answers: { path: string; status: number }[] = [];
+    // Set before the first export, because Effect's fetch client keeps the `fetch` it finds first.
+    const send = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const res = await send(input, init);
+      const url = new Request(input, init).url;
+      if (url.startsWith(new URL(dsn).origin)) answers.push({ path: new URL(url).pathname.split("/").filter(Boolean).slice(2).join("/"), status: res.status });
+      return res;
+    }) as typeof fetch;
+
+    const run = await runVideo({ dsn, environment: "live-check", instanceId: `${VIDEO}_live_${stamp}` });
     const job = { state: "error", stage: "metadata", error: `live check ${stamp}: This video is unavailable`, manifest: null };
-    await runVideo({ dsn, environment: "live-check", job, instanceId: `${VIDEO}_live_fail_${stamp}` });
-    console.log("instances", `${VIDEO}_live_${stamp}`, `${VIDEO}_live_fail_${stamp}`);
+    const failed = await runVideo({ dsn, environment: "live-check", job, instanceId: `${VIDEO}_live_fail_${stamp}` });
+    globalThis.fetch = send;
+
+    expect(run.completed).toBe(true);
+    expect(failed.completed).toBe(false);
+    expect(answers.filter((a) => a.status >= 300)).toEqual([]);
+    console.log("Sentry answers", JSON.stringify(answers.reduce<Record<string, number>>((n, a) => ({ ...n, [`${a.path} ${a.status}`]: (n[`${a.path} ${a.status}`] ?? 0) + 1 }), {})));
+    const sent = (path: string) => answers.filter((a) => a.path === path).length;
+    expect(sent("integration/otlp/v1/traces")).toBeGreaterThan(0);
+    expect(sent("integration/otlp/v1/logs")).toBeGreaterThan(0);
+    expect(sent("envelope")).toBe(1);
   }, 60_000);
 });

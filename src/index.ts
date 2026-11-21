@@ -97,8 +97,8 @@ function route(request: Request, env: Env, url: URL, waitUntil: (p: Promise<unkn
   return ["/*", Effect.succeed(new Response("not found", { status: 404 }))];
 }
 
-/** An error that escapes the handler is reported, then thrown, so the Worker answers 500. */
-const reported = <A, E, R>(effect: Effect.Effect<A, E, R>, attributes: Record<string, string>) =>
+/** An error that escapes the handler is reported, then thrown, so the Worker answers 500. Use it inside the span. */
+const reported = (attributes: Record<string, string>) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.tapCause((cause) => Effect.flatMap(Telemetry, (telemetry) => telemetry.reportError(Cause.squash(cause), attributes))));
 
 const discover = (source: (typeof SOURCES)[number]) =>
@@ -117,6 +117,7 @@ export default {
     const [path, handler] = route(request, env, url, (p) => ctx.waitUntil(p));
     const effect = handler.pipe(
       Effect.tap((res) => annotate({ "http.response.status_code": res.status })),
+      reported({ "http.route": path }),
       span(`${request.method} ${path}`, "http.server", {
         "http.request.method": request.method,
         "http.route": path,
@@ -124,7 +125,7 @@ export default {
         "url.query": url.search.slice(1) || undefined,
       }, "server"),
     );
-    return runApp(env, reported(effect, { "http.route": path }), (p) => ctx.waitUntil(p));
+    return runApp(env, effect, (p) => ctx.waitUntil(p));
   },
 
   scheduled(controller, env, ctx): Promise<void> {
@@ -136,7 +137,7 @@ export default {
       }
       yield* Effect.forEach(SOURCES, discover, { concurrency: "unbounded", discard: true });
       yield* startPending;
-    }).pipe(span(`cron ${controller.cron}`, "faas.cron", { "faas.cron": controller.cron, "faas.trigger": "timer" }));
-    return runApp(env, reported(effect, { "faas.cron": controller.cron }), (p) => ctx.waitUntil(p));
+    }).pipe(reported({ "faas.cron": controller.cron }), span(`cron ${controller.cron}`, "faas.cron", { "faas.cron": controller.cron, "faas.trigger": "timer" }));
+    return runApp(env, effect, (p) => ctx.waitUntil(p));
   },
 } satisfies ExportedHandler<Env>;

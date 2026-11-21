@@ -1,5 +1,5 @@
 import { getContainer } from "@cloudflare/containers";
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { MAX_IN_FLIGHT, MAX_RETRIES, MIN_DURATION_SECONDS, RETRY_BASE_MINUTES, type Source } from "./config";
 import { Bindings, annotate, httpFetch, span, sql, traceHeaders } from "./runtime";
 import { errorMessage, workflowTraceId } from "./telemetry";
@@ -85,15 +85,16 @@ export const discoverRss = (source: Source) =>
     let failures = 0;
     let lastError: unknown;
     for (const channelId of source.youtubeChannelIds) {
-      const result = yield* Effect.result(discoverChannel(source, channelId));
-      if (result._tag === "Success") {
-        inserted += result.success;
+      // `exit`, so a rejected fetch, which is a defect, also moves on to the next channel.
+      const exit = yield* Effect.exit(discoverChannel(source, channelId));
+      if (Exit.isSuccess(exit)) {
+        inserted += exit.value;
         continue;
       }
       failures++;
-      lastError = result.failure;
+      lastError = Cause.squash(exit.cause);
       yield* Effect.logError(`RSS feed of channel ${channelId} failed`).pipe(
-        Effect.annotateLogs({ "video.source": source.id, "youtube.channel_id": channelId, error: errorMessage(result.failure) }),
+        Effect.annotateLogs({ "video.source": source.id, "youtube.channel_id": channelId, error: errorMessage(lastError) }),
       );
     }
     yield* annotate({ "videos.discovered": inserted, "videos.failed_channels": failures });
@@ -241,10 +242,11 @@ export const startPending = Effect.gen(function* () {
   let started = 0;
   for (const row of results) {
     if (started >= slots) break;
-    const result = yield* Effect.result(startWorkflow(row.id, row.source));
-    if (result._tag === "Failure") {
-      yield* setStatus(row.id, "error", `workflow start failed: ${errorMessage(result.failure).slice(0, 400)}`);
-    } else if (result.success === "started") {
+    // `exit`, so a failed Workflows call, which is a defect, marks this video and the others still start.
+    const exit = yield* Effect.exit(startWorkflow(row.id, row.source));
+    if (Exit.isFailure(exit)) {
+      yield* setStatus(row.id, "error", `workflow start failed: ${errorMessage(Cause.squash(exit.cause)).slice(0, 400)}`);
+    } else if (exit.value === "started") {
       yield* setStatus(row.id, "processing");
       started++;
     }

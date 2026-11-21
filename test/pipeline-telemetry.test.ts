@@ -68,3 +68,14 @@ test("a failed run makes one Issue, linked to its trace, and a failed root span"
   expect(root).toMatchObject({ failed: true });
   expect(root.attributes["video.outcome"]).toBe("error");
 });
+
+test("a run whose first step fails still ends its run, with an Issue and a failed root span", async () => {
+  const failed = captureOtlp();
+  const result = await runVideo({ dsn: DSN, failProcessing: true, instanceId: `${VIDEO}_first_step` });
+  failed.restore();
+  expect(result.completed).toBe(false);
+  expect(result.db.query("SELECT outcome, reason IS NOT NULL AS reason FROM video_runs").all()).toEqual([{ outcome: "error", reason: 1 }]);
+  expect(result.db.query("SELECT status FROM videos").all()).toEqual([{ status: "error" }]);
+  expect(failed.events.map((e) => e.value)).toEqual(["D1 unavailable"]);
+  expect(failed.spans.find((s) => !s.parentSpanId)).toMatchObject({ failed: true });
+});

@@ -3,8 +3,8 @@ import { beforeEach, expect, mock, test } from "bun:test";
 import type { Env } from "../src/env";
 import { d1, migrated } from "./d1";
 
-mock.module("@cloudflare/containers", () => ({ Container: class {}, getContainer: () => ({}) }));
-const { endRun, reconcileProcessing, startRun, startWorkflow } = await import("../src/videos");
+mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
+const { endRun, reconcileProcessing, startPending, startRun, startWorkflow } = await import("../src/videos");
 const { runApp } = await import("../src/runtime");
 
 let db: Database;
@@ -142,4 +142,21 @@ test("a failed create closes its run, so the next start can try again", async ()
   const [run] = runs("-abc") as { instance_id: string; outcome: string; reason: string }[];
   expect(run.instance_id).toMatch(/^v-abc_/);
   expect([run.outcome, run.reason]).toEqual(["error", "workflow start failed: Workflows unavailable"]);
+});
+
+test("a failed instance lookup marks that video and still starts the next one", async () => {
+  const now = new Date().toISOString();
+  db.query("INSERT INTO videos (id, source, published_at, status, updated_at) VALUES ('abc', 'theo', '2026-11-02', 'pending', ?), ('def', 'theo', '2026-11-01', 'pending', ?)").run(now, now);
+  openRun("abc_old", 30);
+  const flaky = env();
+  const get = flaky.VIDEO_WORKFLOW.get;
+  flaky.VIDEO_WORKFLOW.get = async (id: string) => {
+    if (id === "abc_old") throw new Error("Workflows unavailable");
+    return get(id);
+  };
+  expect(await runApp(flaky, startPending)).toBe(1);
+  expect(db.query("SELECT id, status, error FROM videos ORDER BY id").all()).toEqual([
+    { id: "abc", status: "error", error: "workflow start failed: Workflows unavailable" },
+    { id: "def", status: "processing", error: null },
+  ]);
 });

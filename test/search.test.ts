@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Env } from "../src/env";
 import { d1, migrated } from "./d1";
+import { DSN, captureOtlp, settle } from "./harness";
 
 mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
 const { lookup } = await import("../src/lookup");
@@ -107,4 +108,30 @@ describe("startPending", () => {
     expect(await runApp(env(), startPending)).toBe(2);
     expect(started).toEqual(["old1", "old2"]);
   });
+});
+
+test("a lookup counts the creator's coverage beside the search, not after it", async () => {
+  video("theo1", "theo", "2026-09-01");
+  mention(1, "theo1", "dev", "typescript generics are hard to read");
+  // Each query takes 30 ms, so queries that run one after another cannot overlap.
+  const slow = d1(db);
+  const prepare = slow.prepare;
+  slow.prepare = (sql: string) => {
+    const statement = prepare(sql);
+    for (const name of ["all", "first", "run"] as const) {
+      const call = statement[name];
+      (statement as Record<string, unknown>)[name] = async () => (await new Promise((r) => setTimeout(r, 30)), call());
+    }
+    return statement;
+  };
+  const sent = captureOtlp();
+  await runApp({ ...env(), DB: slow, SENTRY_DSN: DSN } as unknown as Env, lookup({ handle: "dev", tweet: "", source: "theo" }));
+  await settle(1200);
+  sent.restore();
+
+  const queries = sent.spans.filter((s) => s.attributes["sentry.op"] === "db.query");
+  const coverage = queries.find((s) => String(s.attributes["db.query.text"]).startsWith("SELECT COUNT(*) AS videos"))!;
+  const search = queries.filter((s) => s !== coverage);
+  expect(search.length).toBeGreaterThan(0);
+  expect(coverage.startMs).toBeLessThan(search[0].endMs);
 });

@@ -7,6 +7,8 @@ export interface SentSpan {
   spanId: string;
   parentSpanId?: string;
   failed: boolean;
+  startMs: number;
+  endMs: number;
   attributes: Record<string, unknown>;
 }
 export interface SentLog { body: string; level: string; traceId?: string; attributes: Record<string, unknown> }
@@ -43,7 +45,11 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = request.url;
   if (url.endsWith("/v1/traces")) {
     for (const rs of JSON.parse(body).resourceSpans) for (const ss of rs.scopeSpans) for (const s of ss.spans) {
-      sent.spans.push({ name: s.name, traceId: s.traceId, spanId: s.spanId, parentSpanId: s.parentSpanId || undefined, failed: s.status?.code === 2, attributes: otlpAttributes(s.attributes) });
+      sent.spans.push({
+        name: s.name, traceId: s.traceId, spanId: s.spanId, parentSpanId: s.parentSpanId || undefined, failed: s.status?.code === 2,
+        startMs: Number(BigInt(s.startTimeUnixNano) / 1000n) / 1000, endMs: Number(BigInt(s.endTimeUnixNano) / 1000n) / 1000,
+        attributes: otlpAttributes(s.attributes),
+      });
     }
   } else if (url.endsWith("/v1/logs")) {
     for (const rl of JSON.parse(body).resourceLogs) for (const sl of rl.scopeLogs) for (const l of sl.logRecords) {

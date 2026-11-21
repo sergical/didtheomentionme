@@ -33,6 +33,13 @@ describe("a video run sends one trace to Sentry", () => {
     expect(sent.spans.filter((s) => s.name.startsWith("phase:"))).toEqual([]);
   });
 
+  test("with each query's whole SQL as its description, so Sentry tells different queries apart", () => {
+    const queries = sent.spans.filter((s) => s.attributes["sentry.op"] === "db.query");
+    for (const query of queries) expect(query.attributes["sentry.description"]).toBe(query.attributes["db.query.text"]);
+    const updates = queries.filter((s) => s.name === "UPDATE videos").map((s) => s.attributes["sentry.description"]);
+    expect(new Set(updates).size).toBeGreaterThan(1);
+  });
+
   test("with storage spans named as Sentry's SDKs name them", () => {
     expect(sent.spans.filter((s) => op(s) === "object.get").every((s) => s.name === "r2_get")).toBe(true);
     expect(named(sent, "D1 batch")).toHaveLength(1);

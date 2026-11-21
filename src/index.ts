@@ -44,9 +44,11 @@ const admin = (url: URL) =>
   });
 
 // Pages fall back to the default creator for an unknown `source`.
+const pageSourceId = (requested: string | null) => (getSource(requested) ?? getSource(DEFAULT_SOURCE)!).id;
+
 const pageSources = (requested: string | null) =>
   Effect.gen(function* () {
-    const { id } = getSource(requested) ?? getSource(DEFAULT_SOURCE)!;
+    const id = pageSourceId(requested);
     const sources = yield* Effect.forEach(SOURCES, (s) => Effect.map(coverage(s.id), (c) => ({ id: s.id, name: s.name, avatar: s.avatar, hue: s.hue, coverage: c })), { concurrency: "unbounded" });
     return { source: sources.find((s) => s.id === id)!, sources };
   });
@@ -63,18 +65,21 @@ const lookupRoutes = (url: URL) =>
       const result = yield* Effect.result(lookup(input));
       return result._tag === "Success" ? Response.json(result.success) : Response.json({ error: result.failure.message }, { status: 400 });
     }
-    const { source, sources } = yield* pageSources(input.source);
-    const page = { source, sources, input: { ...input, source: source.id } };
-    if (empty) return html(renderPage(page));
-    const result = yield* Effect.result(lookup(page.input));
+    const pageInput = { ...input, source: pageSourceId(input.source) };
+    // The picker's counts and the lookup need nothing from each other, so they run at once.
+    const [{ source, sources }, result] = yield* Effect.all([pageSources(input.source), empty ? Effect.succeed(undefined) : Effect.result(lookup(pageInput))], { concurrency: 2 });
+    const page = { source, sources, input: pageInput };
+    if (!result) return html(renderPage(page));
     return result._tag === "Success" ? html(renderPage({ ...page, result: result.success })) : html(renderPage({ ...page, error: result.failure.message }), 400);
   });
 
 const exploreRoute = (url: URL) =>
   Effect.gen(function* () {
-    const { source, sources } = yield* pageSources(url.searchParams.get("source"));
+    const requested = url.searchParams.get("source");
     const sort = url.searchParams.get("sort") === "posts" ? "posts" : "newest";
-    return html(renderExplore(yield* exploreData(source, sources, sort)));
+    // The picker's counts and the page's numbers need nothing from each other, so they run at once.
+    const [{ source, sources }, data] = yield* Effect.all([pageSources(requested), exploreData(pageSourceId(requested), sort)], { concurrency: 2 });
+    return html(renderExplore({ ...data, source, sources }));
   });
 
 /** The route a request goes to, and the Effect that answers it. */

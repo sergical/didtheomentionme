@@ -53,13 +53,28 @@ const d1Attributes = (result: unknown): Attributes => {
   return { "cloudflare.d1.rows_read": meta?.rows_read, "cloudflare.d1.rows_written": meta?.rows_written, "cloudflare.d1.duration": meta?.duration };
 };
 
-/** One D1 statement, or a batch when `sql` lists several statements on their own lines. */
+/**
+ * One D1 statement, or a batch when `sql` lists several statements on their own lines. The span's description is the
+ * whole SQL: Sentry finds N+1 and consecutive queries by the description, so two different queries must not share one.
+ */
 export const d1 = <A>(sql: string, run: (db: D1Database) => Promise<A>) => {
   const batch = sql.includes("\n;\n");
   const name = batch ? "D1 batch" : sqlSummary(sql);
-  return Effect.flatMap(bindings, (env) =>
-    call(name, "db.query", { "db.system.name": "cloudflare-d1", "db.operation.name": batch ? "batch" : undefined, "db.query.text": sql, "db.query.summary": batch ? undefined : name }, () => run(env.DB), d1Attributes));
+  const attributes = {
+    "sentry.description": sql,
+    "db.system.name": "cloudflare-d1",
+    "db.operation.name": batch ? "batch" : undefined,
+    "db.query.text": sql,
+    "db.query.summary": batch ? undefined : name,
+  };
+  return Effect.flatMap(bindings, (env) => call(name, "db.query", attributes, () => run(env.DB), d1Attributes));
 };
+
+/** The same statement for each set of values, in one D1 batch: one round trip instead of one per row. */
+export const d1Batch = (query: string, rows: unknown[][]) =>
+  rows.length === 0
+    ? Effect.succeed([] as D1Result[])
+    : d1(`${query}\n;\n`, (db) => db.batch(rows.map((values) => db.prepare(query).bind(...values))));
 
 type R2Operation = "GetObject" | "PutObject" | "ListObjects" | "DeleteObject";
 /** The SDK's span name and op for each R2 call. */

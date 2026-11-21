@@ -24,7 +24,11 @@ function mention(videoId: string, handle: string, firstSeen: number, lastSeen = 
   ).run(nextId++, videoId, handle, normalizeHandle(handle), `post by ${handle}`, firstSeen, lastSeen, firstSeen, quote ? firstSeen : null, quote);
 }
 
-const explore = (sort: ExploreSort = "newest") => runApp({ DB: d1(db) } as unknown as Env, exploreData(theo, [theo, prime], sort));
+const explore = async (sort: ExploreSort = "newest") => ({
+  ...(await runApp({ DB: d1(db) } as unknown as Env, exploreData(theo.id, sort))),
+  source: theo,
+  sources: [theo, prime],
+});
 
 beforeEach(() => {
   db = migrated();

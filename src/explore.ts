@@ -1,6 +1,6 @@
 import { SOURCES } from "./config";
 import { Effect } from "effect";
-import { span, sql } from "./runtime";
+import { span, sql, type App } from "./runtime";
 import { UNKNOWN_HANDLE, formatTime } from "./pipeline";
 import { reading } from "./lookup";
 import { NEW_TAB, PICKER_SCRIPT, PLAY, creatorPicker, documentHead, esc, formatDate, hue, plural, saidFigure, youtube, type SourceRef } from "./page";
@@ -80,7 +80,12 @@ const POSITION_BINS = 10;
 
 const DONE = "JOIN videos v ON v.id = m.video_id WHERE v.source = ? AND v.status = 'done'";
 
-export const exploreData = (source: SourceRef, sources: SourceRef[], sort: ExploreSort) => Effect.gen(function* () {
+/**
+ * The page's numbers for one creator. The creator picker's data comes apart, so a page can run both at once instead of
+ * one after the other.
+ */
+export const exploreData = (sourceId: string, sort: ExploreSort): Effect.Effect<Omit<ExploreData, "source" | "sources">, never, App> => Effect.gen(function* () {
+  const source = { id: sourceId };
   const all = sql.all;
   const handles = SOURCES.map((s) => s.xHandle.toLowerCase());
   const [[videoTotals], [mentionTotals], accounts, bins, longReads, videos, videoAccounts, crossRows] = yield* Effect.all([
@@ -149,8 +154,6 @@ export const exploreData = (source: SourceRef, sources: SourceRef[], sort: Explo
   }));
 
   return {
-    source,
-    sources,
     xHandle: self.xHandle,
     sort,
     totals: { ...videoTotals, ...mentionTotals },
@@ -160,7 +163,7 @@ export const exploreData = (source: SourceRef, sources: SourceRef[], sort: Explo
     videos: videos.map((v) => ({ ...v, accounts: byVideo.get(v.id) ?? [] })),
     crossovers,
   };
-}).pipe(span("explore data", "function", { "explore.source": source.id, "explore.sort": sort }));
+}).pipe(span("explore data", "function", { "explore.source": sourceId, "explore.sort": sort }));
 
 /** Readings, not comments, with one card for each frame or quote. Two rows can share both when one post was read twice. */
 function realReads(rows: LongRead[]): LongRead[] {

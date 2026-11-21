@@ -1,7 +1,7 @@
 import { getContainer } from "@cloudflare/containers";
 import { Cause, Effect, Exit } from "effect";
 import { MAX_IN_FLIGHT, MAX_RETRIES, MIN_DURATION_SECONDS, RETRY_BASE_MINUTES, type Source } from "./config";
-import { Bindings, annotate, httpFetch, span, sql, traceHeaders } from "./runtime";
+import { Bindings, annotate, d1Batch, httpFetch, span, sql, traceHeaders } from "./runtime";
 import { errorMessage, workflowTraceId } from "./telemetry";
 
 export interface VideoInfo {
@@ -49,15 +49,17 @@ export const startRun = (videoId: string, instanceId: string) =>
 export const endRun = (instanceId: string, outcome: string, reason: string | null = null) =>
   sql.run("UPDATE video_runs SET outcome = ?, reason = ?, ended_at = ? WHERE instance_id = ? AND ended_at IS NULL", outcome, reason, now(), instanceId);
 
-/** Inserts an unknown video as pending. An existing row keeps its status. */
-const insertPending = (source: string, v: VideoInfo) =>
+const INSERT_PENDING = `INSERT INTO videos (id, source, title, published_at, duration, status, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT(id) DO NOTHING`;
+
+/**
+ * Inserts unknown videos as pending, in one batch, and returns how many were new. An existing row keeps its status.
+ * One INSERT per feed entry was an N+1 that Sentry flagged: about 15 to 30 sequential queries per channel.
+ */
+const insertPending = (source: string, videos: VideoInfo[]) =>
   Effect.map(
-    sql.run(
-      `INSERT INTO videos (id, source, title, published_at, duration, status, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT(id) DO NOTHING`,
-      v.id, source, v.title, isoOrNull(v.publishedAt), v.duration, now(),
-    ),
-    (result) => result.meta.changes > 0,
+    d1Batch(INSERT_PENDING, videos.map((v) => [v.id, source, v.title, isoOrNull(v.publishedAt), v.duration, now()])),
+    (results) => results.filter((result) => result.meta.changes > 0).length,
   );
 
 const decodeXml = (s: string) =>
@@ -67,15 +69,15 @@ const discoverChannel = (source: Source, channelId: string) =>
   Effect.gen(function* () {
     const res = yield* httpFetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
     if (!res.ok) return yield* Effect.fail(new Error(`RSS ${source.id} ${channelId}: ${res.status}`));
-    let inserted = 0;
+    const videos: VideoInfo[] = [];
     for (const entry of (yield* Effect.promise(() => res.text())).split("<entry>").slice(1)) {
       const id = entry.match(/<yt:videoId>([^<]+)<\/yt:videoId>/)?.[1];
       if (!id) continue;
       const title = entry.match(/<title>([^<]*)<\/title>/)?.[1];
       const publishedAt = entry.match(/<published>([^<]+)<\/published>/)?.[1] ?? null;
-      if (yield* insertPending(source.id, { id, title: title ? decodeXml(title) : null, publishedAt, duration: null })) inserted++;
+      videos.push({ id, title: title ? decodeXml(title) : null, publishedAt, duration: null });
     }
-    return inserted;
+    return yield* insertPending(source.id, videos);
   });
 
 /** One failing channel does not stop the others; it fails only when every channel failed. */
@@ -124,15 +126,11 @@ export const backfill = (source: Source, days: number) =>
       videos.push(...(JSON.parse(body) as { videos: ListedVideo[] }).videos);
     }
     const cutoff = Date.now() - days * 86_400_000;
-    let inserted = 0;
-    for (const v of videos) {
+    const wanted = videos.filter((v) => {
       const published = v.publishedAt ? Date.parse(v.publishedAt) : NaN;
-      if (!(published >= cutoff)) continue;
-      if (v.duration != null && v.duration < MIN_DURATION_SECONDS) continue;
-      if (v.liveStatus === "is_live" || v.liveStatus === "is_upcoming") continue;
-      const added = yield* insertPending(source.id, { id: v.id, title: v.title ?? null, publishedAt: v.publishedAt ?? null, duration: v.duration ?? null });
-      if (added) inserted++;
-    }
+      return published >= cutoff && !(v.duration != null && v.duration < MIN_DURATION_SECONDS) && v.liveStatus !== "is_live" && v.liveStatus !== "is_upcoming";
+    });
+    const inserted = yield* insertPending(source.id, wanted.map((v) => ({ id: v.id, title: v.title ?? null, publishedAt: v.publishedAt ?? null, duration: v.duration ?? null })));
     return { listed: videos.length, inserted };
   }).pipe(Effect.ensuring(Effect.orDie(destroyContainer("admin"))), span("backfill", "function", { "video.source": source.id, days }));
 
@@ -212,7 +210,7 @@ export const reconcileProcessing = Effect.gen(function* () {
 
 export const processNow = (videoId: string, source: string) =>
   Effect.gen(function* () {
-    yield* insertPending(source, { id: videoId, title: null, publishedAt: null, duration: null });
+    yield* insertPending(source, [{ id: videoId, title: null, publishedAt: null, duration: null }]);
     const result = yield* startWorkflow(videoId, source);
     if (result === "started") yield* setStatus(videoId, "processing");
     return result;

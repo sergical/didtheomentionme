@@ -59,3 +59,12 @@ test("a step ends only after Sentry has its spans and logs", async () => {
   expect(sent.spans.map((s) => s.name)).toEqual(["store-db"]);
   expect(sent.logs.map((l) => l.body)).toEqual(["Stored 1 mentions"]);
 });
+
+// The exporter retries a 500 for about 3 seconds per step, and its shutdown timeout caps that at 10 seconds.
+test("a step keeps its result and its error when Sentry rejects the export", async () => {
+  const sent = captureOtlp({ status: 500 });
+  const steps = await Steps.start({ SENTRY_DSN: DSN } as unknown as Env, engine() as never, "rejected-instance");
+  expect(await steps.do("store-db", config, Effect.succeed(3))).toBe(3);
+  await expect(steps.do("store-vectors", config, Effect.fail(new Error("Vectorize unavailable")))).rejects.toThrow("Vectorize unavailable");
+  sent.restore();
+}, 30_000);

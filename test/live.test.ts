@@ -13,10 +13,18 @@ describe.skipIf(!process.env.LIVE_DSN)("live check", () => {
     // Set before the first export, because Effect's fetch client keeps the `fetch` it finds first.
     const send = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const res = await send(input, init);
       const url = new Request(input, init).url;
-      if (url.startsWith(new URL(dsn).origin)) answers.push({ path: new URL(url).pathname.split("/").filter(Boolean).slice(2).join("/"), status: res.status });
-      return res;
+      const path = new URL(url).pathname.split("/").filter(Boolean).slice(2).join("/");
+      const toSentry = url.startsWith(new URL(dsn).origin);
+      try {
+        const res = await send(input, init);
+        if (toSentry) answers.push({ path, status: res.status });
+        return res;
+      } catch (err) {
+        // A request that never got an answer counts as failed, with status 0.
+        if (toSentry) answers.push({ path, status: 0 });
+        throw err;
+      }
     }) as typeof fetch;
 
     const run = await runVideo({ dsn, environment: "live-check", instanceId: `${VIDEO}_live_${stamp}` });
@@ -26,7 +34,7 @@ describe.skipIf(!process.env.LIVE_DSN)("live check", () => {
 
     expect(run.completed).toBe(true);
     expect(failed.completed).toBe(false);
-    expect(answers.filter((a) => a.status >= 300)).toEqual([]);
+    expect(answers.filter((a) => a.status === 0 || a.status >= 300)).toEqual([]);
     console.log("Sentry answers", JSON.stringify(answers.reduce<Record<string, number>>((n, a) => ({ ...n, [`${a.path} ${a.status}`]: (n[`${a.path} ${a.status}`] ?? 0) + 1 }), {})));
     const sent = (path: string) => answers.filter((a) => a.path === path).length;
     expect(sent("integration/otlp/v1/traces")).toBeGreaterThan(0);

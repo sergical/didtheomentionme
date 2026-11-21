@@ -43,7 +43,7 @@ export const bindings = Bindings;
 /** `SELECT mentions videos`, as the Sentry SDK names a query span: the verb and the tables. */
 export function sqlSummary(sql: string): string {
   const verb = sql.trim().split(/\s+/)[0].toUpperCase();
-  const tables = [...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_][\w.]*)/gi)].map((m) => m[1]).filter((t, i, all) => all.indexOf(t) === i);
+  const tables = [...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!SET\b)([A-Za-z_][\w.]*)/gi)].map((m) => m[1]).filter((t, i, all) => all.indexOf(t) === i);
   return [verb, ...tables].join(" ");
 }
 

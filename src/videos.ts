@@ -80,27 +80,57 @@ const discoverChannel = (source: Source, channelId: string) =>
     return yield* insertPending(source.id, videos);
   });
 
-/** One failing channel does not stop the others; it fails only when every channel failed. */
+/** A feed that fails for this long is down, not rate limited, and becomes an Issue. */
+export const FEED_DOWN_MS = 6 * 3_600_000;
+
+const feedOk = (channelId: string) =>
+  sql.run(
+    `INSERT INTO feed_status (channel_id, last_ok_at, failing_since, last_error) VALUES (?, ?, NULL, NULL)
+     ON CONFLICT(channel_id) DO UPDATE SET last_ok_at = excluded.last_ok_at, failing_since = NULL, last_error = NULL`,
+    channelId, now(),
+  );
+
+/** Records a failure, and returns since when the feed has failed without a success. */
+const feedFailed = (channelId: string, error: string) =>
+  Effect.gen(function* () {
+    yield* sql.run(
+      `INSERT INTO feed_status (channel_id, failing_since, last_error) VALUES (?, ?, ?)
+       ON CONFLICT(channel_id) DO UPDATE SET failing_since = COALESCE(failing_since, excluded.failing_since), last_error = excluded.last_error`,
+      channelId, now(), error,
+    );
+    const row = yield* sql.first<{ failing_since: string }>("SELECT failing_since FROM feed_status WHERE channel_id = ?", channelId);
+    return Date.parse(row?.failing_since ?? now());
+  });
+
+/**
+ * One failing channel does not stop the others. It fails only when every channel has failed for `FEED_DOWN_MS`:
+ * YouTube often answers 429 to Cloudflare's addresses for a while, and that alone is no reason for an Issue.
+ */
 export const discoverRss = (source: Source) =>
   Effect.gen(function* () {
     let inserted = 0;
     let failures = 0;
     let lastError: unknown;
+    let downSince = 0;
     for (const channelId of source.youtubeChannelIds) {
       // `exit`, so a rejected fetch, which is a defect, also moves on to the next channel.
       const exit = yield* Effect.exit(discoverChannel(source, channelId));
       if (Exit.isSuccess(exit)) {
         inserted += exit.value;
+        yield* feedOk(channelId);
         continue;
       }
       failures++;
       lastError = Cause.squash(exit.cause);
-      yield* Effect.logError(`RSS feed of channel ${channelId} failed`).pipe(
+      downSince = Math.max(downSince, yield* feedFailed(channelId, errorMessage(lastError).slice(0, 300)));
+      yield* Effect.logWarning(`RSS feed of channel ${channelId} failed`).pipe(
         Effect.annotateLogs({ "video.source": source.id, "youtube.channel_id": channelId, error: errorMessage(lastError) }),
       );
     }
     yield* annotate({ "videos.discovered": inserted, "videos.failed_channels": failures });
-    if (failures > 0 && failures === source.youtubeChannelIds.length) return yield* Effect.fail(lastError);
+    // `downSince` is the most recent start of a failing streak, so every channel has been down at least this long.
+    const allDown = failures > 0 && failures === source.youtubeChannelIds.length;
+    if (allDown && Date.now() - downSince >= FEED_DOWN_MS) return yield* Effect.fail(lastError);
     return inserted;
   }).pipe(span(`discover ${source.id}`, "function", { "video.source": source.id }));
 

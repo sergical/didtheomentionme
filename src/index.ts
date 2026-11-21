@@ -111,7 +111,7 @@ const discover = (source: (typeof SOURCES)[number]) =>
     Effect.gen(function* () {
       const err = Cause.squash(cause);
       const telemetry = yield* Telemetry;
-      // Every channel of the creator failed, which a log alone would leave without an alert.
+      // Every feed of the creator has failed for hours (or the database failed), which a log alone would not alert on.
       yield* telemetry.reportError(err, { "video.source": source.id });
       yield* Effect.logError(`Discovery of ${source.id} failed`).pipe(Effect.annotateLogs({ "video.source": source.id, error: errorMessage(err) }));
     })));

@@ -30,6 +30,7 @@ describe("telemetry model", () => {
     expect(sqlSummary("SELECT m.id FROM mentions m JOIN videos v ON v.id = m.video_id")).toBe("SELECT mentions videos");
     expect(sqlSummary("INSERT OR IGNORE INTO stale_vectors (a) SELECT b FROM mentions")).toBe("INSERT stale_vectors mentions");
     expect(sqlSummary("UPDATE videos SET status = ?")).toBe("UPDATE videos");
+    expect(sqlSummary("INSERT INTO feed_status (a) VALUES (?) ON CONFLICT(a) DO UPDATE SET a = 1")).toBe("INSERT feed_status");
   });
 });
 

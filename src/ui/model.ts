@@ -4,6 +4,9 @@ import type { LookupInput, LookupResult, Reading } from "../lookup";
 
 export type Tab = "handle" | "post" | "text";
 
+/** The tab of the search a page shows. */
+export const tabFor = (input: LookupInput): Tab => (input.q?.trim() ? "text" : input.tweet.trim() && !input.handle.trim() ? "post" : "handle");
+
 export interface SourceRef {
   id: string;
   name: string;
@@ -67,9 +70,9 @@ export const Model = Schema.Struct({
   tab: Schema.Literals(["handle", "post", "text"]),
   /** A search form was sent, and the next page has not shown yet. */
   busy: Schema.Boolean,
-  /** The share button that shows "✓ Copied", if one does. */
-  copied: Schema.NullOr(Button),
-  /** Counts copies, so that only the reset of the last copy clears the label. */
+  /** For each button, the copy whose "✓ Copied" it shows, or 0. Each button resets on its own timer. */
+  copied: Schema.Struct({ share: Schema.Number, copy: Schema.Number }),
+  /** Counts copies, so that a reset clears only the label of its own copy. */
   copies: Schema.Number,
   status: Schema.String,
   /** The status is on screen, not only read by screen readers, when the browser could not copy. */
@@ -87,7 +90,7 @@ export const Message = defineMessageUnion({
   ClickedCopy: { url: Schema.String },
   CopiedLink: { button: Button },
   FailedCopy: { url: Schema.String },
-  ResetCopy: { copy: Schema.Number },
+  ResetCopy: { button: Button, copy: Schema.Number },
   Shared: {},
   Focused: {},
   SubmittedSearch: {},

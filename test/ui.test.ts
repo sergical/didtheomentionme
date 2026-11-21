@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { init, update } from "../src/ui/app";
+import { Effect } from "effect";
+import * as Server from "foldkit/experimental/server";
+import { CopyLink, app, init, update } from "../src/ui/app";
 import { Message, type Model, type PageFlags } from "../src/ui/model";
 
 const source = { id: "theo", name: "Theo", avatar: "/theo.png", hue: 350, coverage: { videos: 1, from: null, to: null } };
@@ -22,11 +24,36 @@ test("a label click and the verdict's switch button focus the tab's input, a key
   expect(update(model, Message.ChangedTab({ tab: "post" })).model.tab).toBe("post");
 });
 
-test("only the reset of the last copy clears the copied label", () => {
-  const twice = run(start(), Message.CopiedLink({ button: "copy" }), Message.CopiedLink({ button: "share" }));
-  expect(twice).toMatchObject({ copied: "share", status: "Result link copied." });
-  expect(run(twice, Message.ResetCopy({ copy: 1 }))).toMatchObject({ copied: "share", status: "Result link copied." });
-  expect(run(twice, Message.ResetCopy({ copy: 2 }))).toMatchObject({ copied: null, status: "" });
+test("each button keeps its copied label for its own time", () => {
+  const both = run(start(), Message.CopiedLink({ button: "copy" }), Message.CopiedLink({ button: "share" }));
+  expect(both.copied).toEqual({ copy: 1, share: 2 });
+  const copyReset = run(both, Message.ResetCopy({ button: "copy", copy: 1 }));
+  expect(copyReset).toMatchObject({ copied: { copy: 0, share: 2 }, status: "Result link copied." });
+  expect(run(copyReset, Message.ResetCopy({ button: "share", copy: 2 }))).toMatchObject({ copied: { copy: 0, share: 0 }, status: "" });
+  // A second copy on the same button outlives the reset of the first.
+  const again = run(start(), Message.CopiedLink({ button: "copy" }), Message.CopiedLink({ button: "copy" }), Message.ResetCopy({ button: "copy", copy: 1 }));
+  expect(again.copied.copy).toBe(2);
+});
+
+test("a browser without the Clipboard API shows the link to copy by hand", async () => {
+  const navigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true });
+  try {
+    expect(await Effect.runPromise(CopyLink({ url: "https://didtheomention.me/?handle=a", button: "copy" }).effect)).toEqual(Message.FailedCopy({ url: "https://didtheomention.me/?handle=a" }));
+  } finally {
+    if (navigator) Object.defineProperty(globalThis, "navigator", navigator);
+  }
+});
+
+test("a lookup error stays on the searched tab's field when another tab opens", async () => {
+  const flags: PageFlags = { ...page({ handle: "bad handle", tweet: "" }), error: "Invalid handle" } as PageFlags;
+  const onText = { ...app, init: (f: PageFlags) => ({ model: { ...init(f).model, tab: "text" as const } }) };
+  const { html } = await Effect.runPromise(Server.renderToString(onText, { flags, buildId: "test" }));
+  const tag = (id: string) => html.match(new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>([^<]*)`))!;
+  expect(tag("handle-hint")[1]).toBe("Invalid handle");
+  expect(tag("text-hint")[1]).toBe("A few words you remember. Matches by words and by meaning.");
+  expect(tag("handle")[0]).toContain('aria-invalid="true"');
+  expect(tag("text")[0]).not.toContain("aria-invalid");
 });
 
 test("a failed copy shows the link to copy by hand", () => {

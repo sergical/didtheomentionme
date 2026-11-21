@@ -7,7 +7,7 @@ import type { LookupResult, Match, Reading } from "../lookup";
 import { UNKNOWN_HANDLE, formatTime } from "../pipeline";
 import { explorePath, resultPath, shareTitle, SITE_ORIGIN } from "../share";
 import { PageBehaviors } from "./behaviors";
-import { Message, type Model, type PageFlags, type SourceRef, type Tab } from "./model";
+import { Message, tabFor, type Model, type PageFlags, type SourceRef, type Tab } from "./model";
 import { formatDate, hue, plural } from "./text";
 
 type H = HtmlBuilder<Message>;
@@ -149,7 +149,7 @@ const more = (h: H, summary: string, body: Node, open = false) =>
 
 function shareControls(h: H, model: Model, url: string, title: string): Node {
   const intent = `https://x.com/intent/post?${new URLSearchParams({ text: `${title} Found the receipts.`, url })}`;
-  const copied = (button: "share" | "copy", label: string) => (model.copied === button ? "✓ Copied" : label);
+  const copied = (button: "share" | "copy", label: string) => (model.copied[button] ? "✓ Copied" : label);
   return h.div([h.Class("share")], [
     h.button([h.Type("button"), h.Class("share-primary"), h.Attribute("data-share", ""), h.OnClick(Message.ClickedShare({ url, title }))], [copied("share", "Share result")]),
     h.button([h.Type("button"), h.Attribute("data-copy", ""), h.Hidden(model.hideCopy), h.OnClick(Message.ClickedCopy({ url }))], [copied("copy", "Copy link")]),
@@ -207,10 +207,11 @@ const ENTRIES = (input: { handle: string; tweet: string; q?: string }): Entry[] 
   },
 ];
 
-/** The field box with every tab's input. A lookup error replaces the hint of the active tab, next to the field it is about. */
-function field(h: H, model: Model, sourceId: string, input: { handle: string; tweet: string; q?: string }, error: string | undefined): Node {
+/** The field box with every tab's input. A lookup error replaces the hint of the searched tab, next to the field it is about. */
+function field(h: H, sourceId: string, input: { handle: string; tweet: string; q?: string }, error: string | undefined): Node {
   const entries = ENTRIES(input);
-  const errorFor = (id: Tab) => (id === model.tab ? error : undefined);
+  const searched = tabFor(input);
+  const errorFor = (id: Tab) => (id === searched ? error : undefined);
   return h.div([], [
     ...entries.map(({ id }) => h.form([h.Id(`f-${id}`), h.Method("get"), h.Action("/")], [h.input([h.Type("hidden"), h.Name("source"), h.Value(sourceId)])])),
     h.div([h.Class("field")], [
@@ -253,7 +254,7 @@ function lookupView(h: H, model: Model, data: Extract<PageFlags, { kind: "lookup
         ...tab(h, "text", "Text", model.tab),
         h.span([h.Class("pill"), h.AriaHidden(true)], []),
       ]),
-      field(h, model, source.id, input, error),
+      field(h, source.id, input, error),
     ]),
     ...(result ? results(h, model, result, SITE_ORIGIN + path, title) : []),
     h.span([h.Class("sr-only"), h.Id("new-tab-hint")], ["Opens in a new tab."]),

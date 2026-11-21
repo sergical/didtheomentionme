@@ -3,15 +3,23 @@ import { Effect, Schema } from "effect";
 import * as Command from "foldkit/command";
 import * as Dom from "foldkit/dom";
 import type { Return } from "foldkit/update";
-import type { LookupInput } from "../lookup";
-import { Flags, Message, Model, type PageFlags, type Tab } from "./model";
+import { Flags, Message, Model, tabFor, type PageFlags } from "./model";
 import { view } from "./views";
 
 const TabSchema = Schema.Literals(["handle", "post", "text"]);
 const ButtonSchema = Schema.Literals(["share", "copy"]);
 const COPIED_MS = 1500;
 
-const copied = (url: string) => Effect.promise(() => navigator.clipboard.writeText(url).then(() => true, () => false));
+// A page without a secure context has no `navigator.clipboard`, so its absence counts as a failed copy too.
+const copied = (url: string) =>
+  Effect.promise(async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 
 const copyMessage = (url: string, button: "share" | "copy") =>
   copied(url).pipe(Effect.map((ok) => (ok ? Message.CopiedLink({ button }) : Message.FailedCopy({ url }))));
@@ -36,9 +44,9 @@ export const ShareLink = Command.define("ShareLink", {
 });
 
 export const ResetCopyLater = Command.define("ResetCopyLater", {
-  args: { copy: Schema.Number },
+  args: { button: ButtonSchema, copy: Schema.Number },
   messages: [Message.ResetCopy],
-  execute: ({ copy }) => Effect.sleep(COPIED_MS).pipe(Effect.as(Message.ResetCopy({ copy }))),
+  execute: ({ button, copy }) => Effect.sleep(COPIED_MS).pipe(Effect.as(Message.ResetCopy({ button, copy }))),
 });
 
 const nextFrame = Effect.callback<void>((resume) => { requestAnimationFrame(() => resume(Effect.void)); });
@@ -59,14 +67,12 @@ export const FocusEntry = Command.define("FocusEntry", {
     }),
 });
 
-export const tabFor = (input: LookupInput): Tab => (input.q?.trim() ? "text" : input.tweet.trim() && !input.handle.trim() ? "post" : "handle");
-
 export const init = (page: PageFlags): Return<Model, Message> => ({
   model: {
     page,
     tab: page.kind === "lookup" ? tabFor(page.input) : "handle",
     busy: false,
-    copied: null,
+    copied: { share: 0, copy: 0 },
     copies: 0,
     status: "",
     statusVisible: false,
@@ -88,12 +94,16 @@ export function update(model: Model, message: Message): Return<Model, Message> {
       return { model, commands: [CopyLink({ url: message.url, button: "copy" })] };
     case "CopiedLink": {
       const copies = model.copies + 1;
-      return { model: { ...model, copied: message.button, copies, status: "Result link copied." }, commands: [ResetCopyLater({ copy: copies })] };
+      return {
+        model: { ...model, copied: { ...model.copied, [message.button]: copies }, copies, status: "Result link copied." },
+        commands: [ResetCopyLater({ button: message.button, copy: copies })],
+      };
     }
     case "FailedCopy":
       return { model: { ...model, statusVisible: true, status: `Copy this link: ${message.url}` } };
     case "ResetCopy":
-      return message.copy === model.copies ? { model: { ...model, copied: null, status: "" } } : { model };
+      if (model.copied[message.button] !== message.copy) return { model };
+      return { model: { ...model, copied: { ...model.copied, [message.button]: 0 }, status: message.copy === model.copies ? "" : model.status } };
     case "SubmittedSearch":
       return { model: { ...model, busy: true } };
     case "ShowedPage":

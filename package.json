@@ -7,7 +7,7 @@
     "plan": "alchemy plan --adopt --stage prod",
     "deploy": "alchemy deploy --adopt --stage prod",
     "dev": "alchemy dev --stage dev",
-    "lint": "oxlint --deny-warnings alchemy.run.ts scripts",
+    "lint": "oxlint --deny-warnings alchemy.run.ts scripts src/telemetry src/ui",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test"

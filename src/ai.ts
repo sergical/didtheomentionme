@@ -61,8 +61,8 @@ export const runModel = (model: string, inputs: unknown, attempts = 3): Effect.E
  * call starts and ends, so nothing rewrites the span before it is sent.
  */
 export const modelSpan = (model: string, attributes: Attributes) =>
-  span(`${OPERATIONS[model] ?? "run"} ${model}`, `gen_ai.${OPERATIONS[model] ?? "run"}`, {
-    "gen_ai.operation.name": OPERATIONS[model] ?? "run",
+  span(`${OPERATIONS.get(model) ?? "run"} ${model}`, `gen_ai.${OPERATIONS.get(model) ?? "run"}`, {
+    "gen_ai.operation.name": OPERATIONS.get(model) ?? "run",
     "gen_ai.provider.name": "cloudflare.workers_ai",
     "gen_ai.request.model": model,
     ...attributes,

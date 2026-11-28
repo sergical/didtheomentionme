@@ -3,30 +3,30 @@
 export type Attributes = Record<string, string | number | boolean | undefined>;
 
 /** Cloudflare's USD prices per 1M tokens. Sentry's own price list can match a reseller's price for an `@cf/` model. */
-export const PRICES: Record<string, { input: number; output?: number }> = {
-  "@cf/cloudflare/clef-flash": { input: 0.038 },
-  "@cf/cloudflare/clef": { input: 0.24 },
-  "@cf/cloudflare/clairic": { input: 0.1 },
-  "@cf/qwen/qwen3.8-27b": { input: 0.45, output: 3.2 },
-  "@cf/baai/bge-m3": { input: 0.012 },
-};
+export const PRICES = new Map<string, { input: number; output?: number }>([
+  ["@cf/cloudflare/clef-flash", { input: 0.038 }],
+  ["@cf/cloudflare/clef", { input: 0.24 }],
+  ["@cf/cloudflare/clairic", { input: 0.1 }],
+  ["@cf/qwen/qwen3.8-27b", { input: 0.45, output: 3.2 }],
+  ["@cf/baai/bge-m3", { input: 0.012 }],
+]);
 
 export const WHISPER = "@cf/openai/whisper-large-v3-turbo";
 const WHISPER_USD_PER_MINUTE = 0.0005;
 
 /** The gen_ai operation of each model, which Sentry turns into the span op `gen_ai.<operation>`. */
-export const OPERATIONS: Record<string, string> = {
-  "@cf/cloudflare/clef-flash": "decide",
-  "@cf/cloudflare/clef": "decide",
-  "@cf/cloudflare/clairic": "extract",
-  "@cf/qwen/qwen3.8-27b": "chat",
-  "@cf/baai/bge-m3": "embeddings",
-  [WHISPER]: "generate_content",
-};
+export const OPERATIONS = new Map([
+  ["@cf/cloudflare/clef-flash", "decide"],
+  ["@cf/cloudflare/clef", "decide"],
+  ["@cf/cloudflare/clairic", "extract"],
+  ["@cf/qwen/qwen3.8-27b", "chat"],
+  ["@cf/baai/bge-m3", "embeddings"],
+  [WHISPER, "generate_content"],
+]);
 
 /** Token usage and cost attributes, in the names Sentry's AI Agents views read. */
-export function usageAttributes(model: string, input: number, output = 0, estimated = false): Attributes {
-  const price = PRICES[model];
+export function usageAttributes(model: string, input: number, output = 0, estimated = false) {
+  const price = PRICES.get(model);
   const inputCost = price ? (input * price.input) / 1e6 : undefined;
   const outputCost = price ? (output * (price.output ?? 0)) / 1e6 : undefined;
 
@@ -41,7 +41,7 @@ export function usageAttributes(model: string, input: number, output = 0, estima
   };
 }
 
-export const whisperCostAttributes = (seconds: number): Attributes => ({
+export const whisperCostAttributes = (seconds: number) => ({
   "app.audio_seconds": seconds,
   "gen_ai.cost.total_tokens": (seconds / 60) * WHISPER_USD_PER_MINUTE,
 });
@@ -50,7 +50,7 @@ export type FrameReference = { videoId: string; second: number; size: "f640" | "
 
 const FRAME_ORIGIN = "https://didtheomention.me";
 
-export function frameAttributes(frame: FrameReference): Attributes {
+export function frameAttributes(frame: FrameReference) {
   return {
     "app.frame.key": `videos/${frame.videoId}/${frame.size}/${frame.second}.jpg`,
     "app.frame.second": frame.second,
@@ -62,10 +62,8 @@ export function frameAttributes(frame: FrameReference): Attributes {
 const KB = (base64Length: number) => Math.round((base64Length * 3) / 4 / 1024);
 
 /** A frame sent to the reader would add its full base64 JPEG to `gen_ai.input.messages`. */
-export function redactImages(messages: string, frameUrl: unknown): string {
-  const reference = typeof frameUrl === "string" ? frameUrl : undefined;
-
-  return messages.replace(/data:([\w/+.-]+);base64,[A-Za-z0-9+/=]+/g, (match, type: string) => reference ?? `[${type}, ${KB(match.length)} KB]`);
+export function redactImages(messages: string, frameUrl?: string): string {
+  return messages.replace(/data:([\w/+.-]+);base64,[A-Za-z0-9+/=]+/g, (match, type: string) => frameUrl ?? `[${type}, ${KB(match.length)} KB]`);
 }
 
 async function sha1Hex(text: string): Promise<string> {
@@ -95,7 +93,10 @@ export interface RecordedSpan {
   attributes?: Attributes;
 }
 
-export const errorMessage = (err: unknown) => String((err as Error)?.message ?? err);
+/** An Error, or an error-like object that another runtime threw. */
+const hasMessage = (cause: unknown): cause is { message: unknown } => cause instanceof Object && "message" in cause;
+
+export const errorMessage = (cause: unknown) => String(hasMessage(cause) ? (cause.message ?? cause) : cause);
 
 /** Headers that let the container's Python SDK continue a trace, in Sentry's and OpenTelemetry's formats. */
 export const spanHeaders = (span: { traceId: string; spanId: string } | undefined): Record<string, string> =>

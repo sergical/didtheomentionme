@@ -133,7 +133,7 @@ const textMatches = (sourceId: string, text: string, embedText: string) =>
       Effect.catchCause((cause) =>
         Effect.logError("Vector search failed, so the lookup uses word search only").pipe(
           Effect.annotateLogs({ error: errorMessage(Cause.squash(cause)) }),
-          Effect.as([] as number[]),
+          Effect.as<number[]>([]),
         ),
       ),
     );
@@ -218,9 +218,8 @@ interface Quoted {
  */
 export function bestReadings(matches: Match[], quoted: Quoted[]): Match[] {
   return matches.map((m) => {
-    const candidates = quoted
-      .filter((r) => r.video_id === m.videoId && (r.text === m.text || sameLongPost(r.text, m.text)))
-      .map((r) => ({ at: r.read_aloud_at, quote: r.quote }));
+    const candidates = quoted.flatMap((r) =>
+      r.video_id === m.videoId && (r.text === m.text || sameLongPost(r.text, m.text)) ? [{ at: r.read_aloud_at, quote: r.quote }] : []);
 
     if (m.readAloud) candidates.push(m.readAloud);
 
@@ -233,7 +232,7 @@ export function bestReadings(matches: Match[], quoted: Quoted[]): Match[] {
 
 const quotedIn = (videoIds: string[]) =>
   videoIds.length === 0
-    ? Effect.succeed([] as Quoted[])
+    ? Effect.succeed<Quoted[]>([])
     : sql.all<Quoted>(
         `SELECT video_id, text, read_aloud_at, quote FROM mentions
          WHERE quote IS NOT NULL AND read_aloud_at IS NOT NULL AND video_id IN (SELECT value FROM json_each(?))`,
@@ -269,39 +268,63 @@ const search = (input: LookupInput) =>
     if (!source) return yield* Effect.fail(new LookupError("Unknown source."));
     // The coverage count needs nothing from the search, so it runs beside it, not after it.
     const covered = yield* Effect.forkChild(coverage(source.id));
-
     const query = input.q?.trim().replace(/\s+/g, " ");
+    const searched = { source: { id: source.id, name: source.name }, covered };
 
-    if (query) {
-      const tokens = queryTokens(query);
+    return yield* (query ? searchText(searched, query) : searchHandle(searched, input));
+  });
 
-      if (tokens.length < MIN_QUERY_WORDS) return yield* Effect.fail(new LookupError("Enter a few words from the post."));
-      const ids = yield* textMatches(source.id, query, query);
+/** The creator a search is about, and the count of their indexed videos, which is still running. */
+interface Searched {
+  source: LookupResult["source"];
+  covered: Fiber.Fiber<LookupResult["coverage"]>;
+}
 
-      const matches = (yield* toMatches(yield* findMentions(source.id, { ids: [...ids] }), () => false))
-        .map((m) => ({ ...m, overlap: overlap(tokens, m.text) }))
-        .sort((a, b) => b.overlap - a.overlap || newestFirst(a, b));
+const searchText = ({ source, covered }: Searched, query: string) =>
+  Effect.gen(function* () {
+    const tokens = queryTokens(query);
 
-      return { source: { id: source.id, name: source.name }, handle: null, query, coverage: yield* Fiber.join(covered), matches } as LookupResult;
-    }
+    if (tokens.length < MIN_QUERY_WORDS) return yield* Effect.fail(new LookupError("Enter a few words from the post."));
+    const ids = yield* textMatches(source.id, query, query);
 
-    let tweet: TweetInfo | undefined;
-    let tweetError: string | undefined;
+    const matches = (yield* toMatches(yield* findMentions(source.id, { ids: [...ids] }), () => false))
+      .map((m) => ({ ...m, overlap: overlap(tokens, m.text) }))
+      .sort((a, b) => b.overlap - a.overlap || newestFirst(a, b));
+
+    const result: LookupResult = { source, handle: null, query, coverage: yield* Fiber.join(covered), matches };
+
+    return result;
+  });
+
+/** The post a search names, as X gives it. */
+interface NamedPost {
+  url: string;
+  tweet?: TweetInfo;
+  tweetError?: string;
+}
+
+const namedPost = (input: LookupInput) =>
+  Effect.gen(function* () {
     // People paste a post link into the handle box too.
-    const tweetUrl = input.tweet.trim() || (parseTweetId(input.handle) ? input.handle : "");
+    const url = input.tweet.trim() || (parseTweetId(input.handle) ? input.handle : "");
+    const none: NamedPost = { url };
 
-    if (tweetUrl) {
-      const id = parseTweetId(tweetUrl);
+    if (!url) return none;
+    const id = parseTweetId(url);
 
-      if (!id) return yield* Effect.fail(new LookupError("That is not an x.com or twitter.com post URL."));
-      tweet = (yield* fetchTweet(id).pipe(span("fetch post", "function", { "post.id": id }))) ?? undefined;
+    if (!id) return yield* Effect.fail(new LookupError("That is not an x.com or twitter.com post URL."));
+    const tweet = (yield* fetchTweet(id).pipe(span("fetch post", "function", { "post.id": id }))) ?? undefined;
+    const named: NamedPost = { url, tweet, tweetError: tweet ? undefined : "Could not fetch that post, so this search uses the handle only." };
 
-      if (!tweet) tweetError = "Could not fetch that post, so this search uses the handle only.";
-    }
+    return named;
+  });
 
+const searchHandle = ({ source, covered }: Searched, input: LookupInput) =>
+  Effect.gen(function* () {
+    const { url, tweet, tweetError } = yield* namedPost(input);
     // A post URL holds the author's handle, so the search still has a handle when the fetch fails.
     const typed = parseHandle(input.handle);
-    const handle = (HANDLE.test(typed) ? typed : "") || tweet?.handle || parseHandle(tweetUrl);
+    const handle = (HANDLE.test(typed) ? typed : "") || tweet?.handle || parseHandle(url);
 
     if (!HANDLE.test(handle)) return yield* Effect.fail(new LookupError("Enter an X handle, for example @theo."));
     const handleNorm = handle.toLowerCase();
@@ -312,7 +335,9 @@ const search = (input: LookupInput) =>
     const matches = (yield* toMatches(rows, (r) => r.handle_norm === handleNorm && textMatchIds.has(r.id)))
       .sort((a, b) => Number(b.exact) - Number(a.exact) || newestFirst(a, b));
 
-    return { source: { id: source.id, name: source.name }, handle, coverage: yield* Fiber.join(covered), tweet, tweetError, matches } as LookupResult;
+    const result: LookupResult = { source, handle, coverage: yield* Fiber.join(covered), tweet, tweetError, matches };
+
+    return result;
   });
 
 const findMentions = (sourceId: string, by: { handleNorm?: string; ids: number[] }) => {
@@ -322,7 +347,7 @@ const findMentions = (sourceId: string, by: { handleNorm?: string; ids: number[]
 
   if (by.ids.length) conditions.push(`m.id IN (${by.ids.map(() => "?").join(",")})`);
 
-  if (conditions.length === 0) return Effect.succeed([] as Row[]);
+  if (conditions.length === 0) return Effect.succeed<Row[]>([]);
 
   return sql.all<Row>(
     `SELECT m.id, m.video_id, m.handle, m.handle_norm, m.display_name, m.text, m.first_seen, m.last_seen,

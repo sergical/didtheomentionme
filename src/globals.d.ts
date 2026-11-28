@@ -3,3 +3,7 @@
 interface SubtleCrypto {
   timingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuffer | ArrayBufferView): boolean;
 }
+
+interface RequestInit {
+  cf?: RequestInitCfProperties;
+}

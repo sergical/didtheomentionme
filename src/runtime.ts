@@ -36,8 +36,15 @@ export const span = (name: string, op: string, attributes: Attributes = {}, kind
 
 export const annotate = (attributes: Attributes) => Effect.annotateCurrentSpan(clean(attributes));
 
-/** A storage or HTTP call, in the span names and attributes Sentry's SDKs use. `after` adds attributes from the result. */
-const call = <A>(name: string, op: string, attributes: Attributes, run: () => Promise<A>, after?: (result: A) => Attributes) =>
+/** The span of one storage or HTTP call, in the names and attributes Sentry's SDKs use. */
+interface CallSpan {
+  name: string;
+  op: string;
+  attributes: Attributes;
+}
+
+/** A storage or HTTP call under its span. `after` adds attributes from the result. */
+const call = <A>({ name, op, attributes }: CallSpan, run: () => Promise<A>, after?: (result: A) => Attributes) =>
   Effect.promise(run).pipe(Effect.tap((result) => (after ? annotate(after(result)) : Effect.void)), span(name, op, attributes));
 
 export const bindings = Bindings;
@@ -45,24 +52,23 @@ export const bindings = Bindings;
 /** `SELECT mentions videos`, as the Sentry SDK names a query span: the verb and the tables. */
 export function sqlSummary(sql: string): string {
   const verb = sql.trim().split(/\s+/)[0].toUpperCase();
-  const tables = [...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!SET\b)([A-Za-z_][\w.]*)/gi)].map((m) => m[1]).filter((t, i, all) => all.indexOf(t) === i);
+  const tables = new Set([...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!SET\b)([A-Za-z_][\w.]*)/gi)].map((m) => m[1]));
 
   return [verb, ...tables].join(" ");
 }
 
-type D1Meta = { meta?: { rows_read?: number; rows_written?: number; duration?: number } };
+/** What D1 reports about one statement. A batch and `first()` report nothing. */
+type D1Meta = D1Result["meta"];
 
-const d1Attributes = (result: unknown): Attributes => {
-  const meta = (result as D1Meta)?.meta;
-
-  return { "cloudflare.d1.rows_read": meta?.rows_read, "cloudflare.d1.rows_written": meta?.rows_written, "cloudflare.d1.duration": meta?.duration };
-};
+const d1Attributes = (meta: D1Meta | undefined) =>
+  ({ "cloudflare.d1.rows_read": meta?.rows_read, "cloudflare.d1.rows_written": meta?.rows_written, "cloudflare.d1.duration": meta?.duration });
 
 /**
  * One D1 statement, or a batch when `sql` lists several statements on their own lines. The span's description is the
  * whole SQL: Sentry finds N+1 and consecutive queries by the description, so two different queries must not share one.
+ * `meta` picks D1's numbers out of the result, when it has them.
  */
-export const d1 = <A>(sql: string, run: (db: D1Database) => Promise<A>) => {
+export const d1 = <A>(sql: string, run: (db: D1Database) => Promise<A>, meta?: (result: A) => D1Meta) => {
   const batch = sql.includes("\n;\n");
   const name = batch ? "D1 batch" : sqlSummary(sql);
 
@@ -74,43 +80,43 @@ export const d1 = <A>(sql: string, run: (db: D1Database) => Promise<A>) => {
     "db.query.summary": batch ? undefined : name,
   };
 
-  return Effect.flatMap(bindings, (env) => call(name, "db.query", attributes, () => run(env.DB), d1Attributes));
+  return Effect.flatMap(bindings, (env) => call({ name, op: "db.query", attributes }, () => run(env.DB), (result) => d1Attributes(meta?.(result))));
 };
 
 /** The same statement for each set of values, in one D1 batch: one round trip instead of one per row. */
 export const d1Batch = (query: string, rows: unknown[][]) =>
   rows.length === 0
-    ? Effect.succeed([] as D1Result[])
+    ? Effect.succeed<D1Result[]>([])
     : d1(`${query}\n;\n`, (db) => db.batch(rows.map((values) => db.prepare(query).bind(...values))));
 
 type R2Operation = "GetObject" | "PutObject" | "ListObjects" | "DeleteObject";
 
 /** The SDK's span name and op for each R2 call. */
-const R2_SPANS: Record<R2Operation, [string, string]> = {
-  GetObject: ["r2_get", "object.get"],
-  PutObject: ["r2_put", "object.put"],
-  ListObjects: ["r2_list", "object.list"],
-  DeleteObject: ["r2_delete", "object.delete"],
+const R2_SPANS: Record<R2Operation, { name: string; op: string }> = {
+  GetObject: { name: "r2_get", op: "object.get" },
+  PutObject: { name: "r2_put", op: "object.put" },
+  ListObjects: { name: "r2_list", op: "object.list" },
+  DeleteObject: { name: "r2_delete", op: "object.delete" },
 };
 
 export const r2 = <A>(operation: R2Operation, key: string, run: (bucket: R2Bucket) => Promise<A>) =>
-  Effect.flatMap(bindings, (env) => call(...R2_SPANS[operation], { "cloudflare.r2.operation": operation, "cloudflare.r2.bucket": "BUCKET", "cloudflare.r2.request.key": key }, () => run(env.BUCKET)));
+  Effect.flatMap(bindings, (env) => call({ ...R2_SPANS[operation], attributes: { "cloudflare.r2.operation": operation, "cloudflare.r2.bucket": "BUCKET", "cloudflare.r2.request.key": key } }, () => run(env.BUCKET)));
 
 export const vectorize = <A>(operation: string, count: number, run: (index: VectorizeIndex) => Promise<A>) =>
-  Effect.flatMap(bindings, (env) => call(`vectorize.${operation}`, "db", { "db.system.name": "cloudflare-vectorize", "db.operation.name": operation, count }, () => run(env.POSTS)));
+  Effect.flatMap(bindings, (env) => call({ name: `vectorize.${operation}`, op: "db", attributes: { "db.system.name": "cloudflare-vectorize", "db.operation.name": operation, count } }, () => run(env.POSTS)));
 
 /** An outbound request. */
 export const httpFetch = (url: string, init?: RequestInit) =>
-  call(`${init?.method ?? "GET"} ${url}`, "http.client", { "http.request.method": init?.method ?? "GET", "url.full": url }, () => fetch(url, init), (res) => ({
+  call({ name: `${init?.method ?? "GET"} ${url}`, op: "http.client", attributes: { "http.request.method": init?.method ?? "GET", "url.full": url } }, () => fetch(url, init), (res) => ({
     "http.response.status_code": res.status,
   }));
 
 /** D1 shorthands: the SQL is also the span's query text. */
 export const sql = {
   all: <T>(query: string, ...binds: unknown[]) =>
-    Effect.map(d1(query, (db) => db.prepare(query).bind(...binds).all<T>()), (result) => result.results),
+    Effect.map(d1(query, (db) => db.prepare(query).bind(...binds).all<T>(), (result) => result.meta), (result) => result.results),
   first: <T>(query: string, ...binds: unknown[]) => d1(query, (db) => db.prepare(query).bind(...binds).first<T>()),
-  run: (query: string, ...binds: unknown[]) => d1(query, (db) => db.prepare(query).bind(...binds).run()),
+  run: (query: string, ...binds: unknown[]) => d1(query, (db) => db.prepare(query).bind(...binds).run(), (result) => result.meta),
 };
 
 /** Headers that let the container continue the current trace. */

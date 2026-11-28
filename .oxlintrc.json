@@ -55,6 +55,16 @@
     {
       "files": ["test/**"],
       "rules": { "max-lines-per-function": "off", "max-nested-callbacks": "off" }
+    },
+    {
+      "files": ["src/*.ts", "src/telemetry/**"],
+      "excludeFiles": ["src/index.ts"],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": [{
+          "group": ["./ui", "./ui/*", "../ui", "../ui/*"],
+          "message": "Only the routes in src/index.ts import the pages. Declare the type next to the code that makes the value, and let src/ui/model.ts repeat it in its schema."
+        }] }]
+      }
     }
   ]
 }

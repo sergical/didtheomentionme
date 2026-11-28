@@ -28,7 +28,7 @@ export class Steps {
   }
 
   /** One step. Its Effect span has the phase as its parent, which a Worker restart keeps. */
-  do<A>(name: string, config: WorkflowStepConfig, body: Effect.Effect<A, unknown, App>, attributes: Attributes = {}): Promise<A> {
+  do<A extends Rpc.Serializable<A>>(name: string, config: WorkflowStepConfig, body: Effect.Effect<A, unknown, App>, attributes: Attributes = {}): Promise<A> {
     const parent = Tracer.externalSpan(this.parent);
 
     const callback = (ctx: WorkflowStepContext) =>
@@ -37,7 +37,7 @@ export class Steps {
         Effect.withParentSpan(parent),
       ));
 
-    return this.step.do(name, config, callback as never) as Promise<A>;
+    return this.step.do(name, config, callback);
   }
 
   /** Steps under one span. `phase:` steps keep its id and start for a restart, and write it once at the end. */

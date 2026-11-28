@@ -1,22 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
 import { Effect } from "effect";
-import type { Env } from "../src/env";
 import { runApp } from "../src/runtime";
+import { env } from "./bindings";
 
 const realSetTimeout = globalThis.setTimeout;
 const realSetImmediate = globalThis.setImmediate;
 
+/** Puts `timer` in place of a global timer function. */
+const setGlobal = (name: "setTimeout" | "setImmediate", timer: typeof setTimeout | typeof setImmediate | (() => void)) =>
+  Object.defineProperty(globalThis, name, { value: timer, configurable: true, writable: true });
+
 afterEach(() => {
-  globalThis.setTimeout = realSetTimeout;
-  globalThis.setImmediate = realSetImmediate;
+  setGlobal("setTimeout", realSetTimeout);
+  setGlobal("setImmediate", realSetImmediate);
 });
 
 test("an Effect run needs no timer, because Workers can drop the timers of a finished request", async () => {
   // Timers set now never fire, like the timers of a request that has ended.
-  globalThis.setTimeout = (() => 0) as unknown as typeof setTimeout;
-  globalThis.setImmediate = (() => 0) as unknown as typeof setImmediate;
+  setGlobal("setTimeout", () => {});
+  setGlobal("setImmediate", () => {});
 
-  const run = runApp({} as Env, Effect.gen(function* () {
+  const run = runApp(env(), Effect.gen(function* () {
     // Yields to the scheduler several times, as a long Effect does.
     for (let i = 0; i < 5; i++) yield* Effect.yieldNow;
 

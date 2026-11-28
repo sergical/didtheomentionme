@@ -1,15 +1,15 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { authorized } from "../src/auth";
-import type { Env } from "../src/env";
+
+const bytes = (data: ArrayBuffer | ArrayBufferView) => (ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data));
 
 beforeAll(() => {
   // Bun has no timingSafeEqual on SubtleCrypto.
-  const subtle = crypto.subtle as unknown as { timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean };
-  subtle.timingSafeEqual ??= (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i]);
+  crypto.subtle.timingSafeEqual ??= (a, b) => bytes(a).length === bytes(b).length && bytes(a).every((byte, i) => byte === bytes(b)[i]);
 });
 
 const check = (token: string | undefined, header: string) =>
-  authorized(new Request("http://x", { headers: { authorization: header } }), { INTERNAL_TOKEN: token } as Env);
+  authorized(new Request("http://x", { headers: { authorization: header } }), { INTERNAL_TOKEN: token });
 
 describe("authorized", () => {
   test("a missing secret never authenticates", async () => {

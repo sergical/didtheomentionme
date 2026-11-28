@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { Effect, Fiber } from "effect";
 import { embed, embedRequests, findQuote, hedge, readPosts, retryDelayMs, runModel } from "../src/ai";
 import { DETECTORS } from "../src/config";
-import type { Env } from "../src/env";
+import { Schema } from "effect";
+import type { Env, Json, ModelInputs } from "../src/env";
 import { runApp, type App } from "../src/runtime";
+import { ai, env as bindings, textsAsked } from "./bindings";
 
-const run = <A>(env: unknown, effect: Effect.Effect<A, unknown, App>) => runApp(env as Env, effect);
+const run = <A>(env: Env, effect: Effect.Effect<A, unknown, App>) => runApp(env, effect);
 
 test("a long post that would pad a request past the limit starts a new one", () => {
   const short = "theo: short post";
@@ -26,17 +28,16 @@ test("short posts share one embed request", () => {
 test("a request over the token limit is split, and the vectors keep the order of the texts", async () => {
   const sizes: number[] = [];
 
-  const env = {
-    AI: {
-      run: async (_model: string, { text }: { text: string[] }) => {
-        sizes.push(text.length);
+  const env = bindings({
+    AI: ai((_model, inputs) => {
+      const text = textsAsked(inputs);
+      sizes.push(text.length);
 
-        if (text.length > 2) throw new Error("8007: Max context reached 68424 tokens but model supports only 60000");
+      if (text.length > 2) throw new Error("8007: Max context reached 68424 tokens but model supports only 60000");
 
-        return { data: text.map((t) => [Number(t)]) };
-      },
-    },
-  } as unknown as Env;
+      return { data: text.map((t) => [Number(t)]) };
+    }),
+  });
 
   expect(await run(env, embed(["1", "2", "3", "4", "5"]))).toEqual([[1], [2], [3], [4], [5]]);
   expect(sizes).toEqual([5, 2, 3, 1, 2]);
@@ -45,14 +46,12 @@ test("a request over the token limit is split, and the vectors keep the order of
 test("an embed error that is not the token limit is not split", async () => {
   let calls = 0;
 
-  const env = {
-    AI: {
-      run: async () => {
-        calls++;
-        throw new Error("4007: bad input");
-      },
-    },
-  } as unknown as Env;
+  const env = bindings({
+    AI: ai(() => {
+      calls++;
+      throw new Error("4007: bad input");
+    }),
+  });
 
   await expect(run(env, embed(["1", "2"]))).rejects.toThrow("4007");
   expect(calls).toBe(1);
@@ -62,7 +61,7 @@ const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeou
 
 /** A call that runs `fn` each time the hedge starts it. */
 const calling = <T>(fn: () => Promise<T>) => Effect.suspend(() => Effect.tryPromise({ try: fn, catch: (err) => err }));
-const hedged = <T>(delayMs: number, fn: () => Promise<T>) => run({}, hedge("model", delayMs, calling(fn)));
+const hedged = <T>(delayMs: number, fn: () => Promise<T>) => run(bindings(), hedge("model", delayMs, calling(fn)));
 
 test("a call still running at the hedge delay is sent again, and the first answer wins", async () => {
   let calls = 0;
@@ -117,13 +116,13 @@ test("the call that loses a hedge is interrupted", async () => {
     ++calls === 1 ? Effect.promise(() => after(100, "stuck")).pipe(Effect.onInterrupt(() => Effect.sync(() => void (interrupted = true)))) : Effect.promise(() => after(1, "fresh")),
   );
 
-  expect(await run({}, hedge("model", 5, call))).toBe("fresh");
+  expect(await run(bindings(), hedge("model", 5, call))).toBe("fresh");
   expect(interrupted).toBe(true);
 });
 
 test("an interrupted model call is not sent again", async () => {
   let calls = 0;
-  const env = { AI: { run: async () => (calls++, Promise.reject(new Error("error 3021"))) } };
+  const env = bindings({ AI: ai(() => (calls++, Promise.reject(new Error("error 3021")))) });
   await run(env, Effect.gen(function* () {
     const fiber = yield* Effect.forkChild(runModel("model", {}, 3));
     yield* Effect.sleep(20);
@@ -133,6 +132,9 @@ test("an interrupted model call is not sent again", async () => {
   expect(calls).toBe(1);
 });
 
+const readerAsked = Schema.decodeUnknownSync(Schema.Struct({ max_tokens: Schema.Number }));
+const quoteAsked = (inputs: ModelInputs) => Schema.decodeUnknownSync(Schema.Struct({ fields: Schema.Struct({ quote: Schema.Struct({ instructions: Schema.String }) }) }))(inputs).fields.quote.instructions;
+
 describe("reading a frame", () => {
   const jpeg = new ArrayBuffer(1);
   const frame = { videoId: "v", second: 1, size: "f1920" } as const;
@@ -140,16 +142,14 @@ describe("reading a frame", () => {
   const read = (page: number, chat: number, source = "X") => {
     let reads = 0;
 
-    const env = {
-      AI: {
-        run: async (model: string, inputs: { max_tokens: number }) => {
-          if (model.includes("flash")) return { answers: { page: { noul: page }, chat: { noul: chat } } };
-          reads++;
+    const env = bindings({
+      AI: ai((model, inputs): Json => {
+        if (model.includes("flash")) return { answers: { page: { noul: page }, chat: { noul: chat } } };
+        reads++;
 
-          return { choices: [{ message: { content: inputs.max_tokens === 5 ? source : "@alice | Alice | a real post" } }] };
-        },
-      },
-    } as unknown as Env;
+        return { choices: [{ message: { content: readerAsked(inputs).max_tokens === 5 ? source : "@alice | Alice | a real post" } }] };
+      }),
+    });
 
     return { lines: run(env, readPosts(DETECTORS[0], jpeg, frame)), reads: () => reads };
   };
@@ -186,15 +186,13 @@ describe("findQuote", () => {
   const ask = (span: [number, number] | null) => {
     const questions: string[] = [];
 
-    const env = {
-      AI: {
-        run: async (_model: string, { fields }: { fields: { quote: { instructions: string } } }) => {
-          questions.push(fields.quote.instructions);
+    const env = bindings({
+      AI: ai((_model, inputs) => {
+        questions.push(quoteAsked(inputs));
 
-          return { answers: { quote: { span } } };
-        },
-      },
-    } as unknown as Env;
+        return { answers: { quote: { span } } };
+      }),
+    });
 
     return { env, questions };
   };

@@ -27,7 +27,7 @@ import {
 import { EXTRACT_EVENT } from "./container";
 import { audioChunkCount, checkJob, startJob, type JobStatus, type Manifest } from "./job";
 import { annotate, d1, r2, span, sql, vectorize, type App } from "./runtime";
-import { Steps } from "./steps";
+import { Steps, type DurableSteps } from "./steps";
 import { Telemetry, errorMessage, frameAttributes } from "./telemetry";
 import { destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
 
@@ -69,9 +69,14 @@ type ReadAloudResult = "read" | "not_read" | "no_quote" | "no_transcript";
 const key = (videoId: string, path: string) => `videos/${videoId}/${path}`;
 const transcriptKey = (videoId: string) => `transcripts/${videoId}.json`;
 
-/** One video run. */
-export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
-  async run(event: WorkflowEvent<VideoParams>, step: WorkflowStep): Promise<void> {
+/** What a run reads from the event that started it. */
+type RunEvent = Pick<WorkflowEvent<VideoParams>, "payload" | "instanceId">;
+
+/** One video run. It takes the bindings and the step API, and nothing else from the Workflows runtime. */
+export class VideoPipeline {
+  constructor(private readonly env: Env) {}
+
+  async run(event: RunEvent, step: DurableSteps): Promise<void> {
     const { videoId, source } = event.payload;
     const { instanceId } = event;
     const steps = await Steps.start(this.env, step, instanceId);
@@ -515,4 +520,9 @@ const cleanup = (videoId: string) =>
     return deleted;
   });
 
-export { VideoPipeline as VideoWorkflow };
+/** The class Workflows runs. It makes one for each invocation of a run. */
+export class VideoWorkflow extends WorkflowEntrypoint<Env, VideoParams> {
+  run(event: WorkflowEvent<VideoParams>, step: WorkflowStep): Promise<void> {
+    return new VideoPipeline(this.env).run(event, step);
+  }
+}

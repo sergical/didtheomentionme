@@ -14,7 +14,8 @@ runs Workers AI models over them.
 - `src/ui/`: the Foldkit pages. `client.ts` is the browser entry, `render.ts` the server side.
 - `container/`: the yt-dlp and ffmpeg container. `migrations/`: the D1 schema.
 - `alchemy.run.ts`: the Cloudflare resources. `scripts/client.ts`: builds the browser script.
-- `test/`: the `bun test` suites. `experiments/`: the scripts behind the model choices.
+- `test/`: the `bun test` suites. `bindings.ts`, `d1.ts` and `harness.ts` there fake the Worker's bindings.
+- `experiments/`: the scripts behind the model choices.
 - `tools/oxlint/anti-slop/`: vendored lint rules. Update them from the source in its `UPSTREAM.md`.
 - `docs/design.md`: how the pipeline works and why.
 
@@ -29,4 +30,5 @@ runs Workers AI models over them.
 
 - Run `pnpm check` before you push.
 - `.github/workflows/check.yml` runs `pnpm check` on every pull request and on each push to `main`.
-- The rules are in `.oxlintrc.json`. `pnpm lint` covers the paths named in the `lint` script in `package.json`.
+- The lint rules are in `.oxlintrc.json` and cover every TypeScript file in the repository.
+- `tsconfig.json` checks `src/` against the Workers types. `tsconfig.bun.json` adds Bun's types and checks the rest.

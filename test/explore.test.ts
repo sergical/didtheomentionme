@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { Env } from "../src/env";
 import { Effect } from "effect";
 import { exploreData, type ExploreSort } from "../src/explore";
 import { renderExplore } from "../src/ui/render";
 import { normalizeHandle } from "../src/pipeline";
 import { runApp } from "../src/runtime";
+import { env } from "./bindings";
 import { d1, migrated } from "./d1";
 
 let db: Database;
@@ -13,22 +13,23 @@ let db: Database;
 const theo = { id: "theo", name: "Theo", avatar: "/theo.png", hue: 350, coverage: { videos: 2, from: "2026-09-01", to: "2026-10-01" } };
 const prime = { id: "prime", name: "Prime", avatar: "/prime.png", hue: 55, coverage: { videos: 1, from: "2026-09-01", to: "2026-09-01" } };
 
-function video(id: string, source: string, published: string, duration = 1000, status = "done") {
-  db.query("INSERT INTO videos (id, source, title, published_at, duration, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(id, source, `Title of ${id}`, published, duration, status, published);
+function video(id: string, source: string, published: string, status = "done") {
+  db.query("INSERT INTO videos (id, source, title, published_at, duration, status, updated_at) VALUES (?, ?, ?, ?, 1000, ?, ?)")
+    .run(id, source, `Title of ${id}`, published, status, published);
 }
 
 let nextId = 1;
 
-function mention(videoId: string, handle: string, firstSeen: number, lastSeen = firstSeen + 2, quote: string | null = null) {
+/** A post on screen from `firstSeen`. With `aloud`, the creator reads it until `lastSeen`. */
+function mention(videoId: string, handle: string, firstSeen: number, aloud?: { lastSeen: number; quote: string }) {
   db.query(
     `INSERT INTO mentions (id, video_id, detector, handle, handle_norm, text, first_seen, last_seen, frame_second, read_aloud_at, quote)
      VALUES (?, ?, 'x', ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(nextId++, videoId, handle, normalizeHandle(handle), `post by ${handle}`, firstSeen, lastSeen, firstSeen, quote ? firstSeen : null, quote);
+  ).run(nextId++, videoId, handle, normalizeHandle(handle), `post by ${handle}`, firstSeen, aloud?.lastSeen ?? firstSeen + 2, firstSeen, aloud ? firstSeen : null, aloud?.quote ?? null);
 }
 
 const explore = async (sort: ExploreSort = "newest") => ({
-  ...(await runApp({ DB: d1(db) } as unknown as Env, exploreData(theo.id, sort))),
+  ...(await runApp(env({ DB: d1(db) }), exploreData(theo.id, sort))),
   source: theo,
   sources: [theo, prime],
 });
@@ -39,10 +40,10 @@ beforeEach(() => {
   video("old", "theo", "2026-09-01");
   video("new", "theo", "2026-10-01");
   video("empty", "theo", "2026-09-15");
-  video("skipped", "theo", "2026-10-02", 1000, "skipped");
+  video("skipped", "theo", "2026-10-02", "skipped");
   video("p1", "prime", "2026-09-01");
   mention("old", "@dev", 50);
-  mention("old", "@dev", 1050, 1200, "post by <dev>");
+  mention("old", "@dev", 1050, { lastSeen: 1200, quote: "post by <dev>" });
   mention("old", "@ThePrimeagen", 120);
   mention("new", "@dev", 500);
   mention("skipped", "@dev", 10);

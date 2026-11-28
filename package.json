@@ -7,8 +7,8 @@
     "plan": "alchemy plan --adopt --stage prod",
     "deploy": "alchemy deploy --adopt --stage prod",
     "dev": "alchemy dev --stage dev",
-    "lint": "oxlint --deny-warnings alchemy.run.ts scripts src",
-    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bun.json",
     "test": "bun test",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test"
   },
@@ -24,6 +24,7 @@
     "@cloudflare/workers-types": "^5.20261001.0",
     "@effect/platform-node": "4.1.5",
     "@oxlint/plugins": "1.95.0",
+    "@types/bun": "1.4.4",
     "alchemy": "2.0.0-beta.87",
     "oxlint": "1.95.0",
     "rolldown": "1.2.16",

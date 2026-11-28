@@ -56,7 +56,7 @@ const Result = Schema.Struct({
 const PageData = Schema.Struct({
   source: SourceRef,
   sources: Schema.mutable(Schema.Array(SourceRef)),
-  input: Schema.Struct({ handle: Schema.String, tweet: Schema.String, q: Schema.optional(Schema.String), source: Schema.optional(Schema.NullOr(Schema.String)) }),
+  input: Schema.Struct({ handle: Schema.String, tweet: Schema.String, q: Schema.optional(Schema.String), source: Schema.optional(Schema.String) }),
   result: Schema.optional(Result),
   error: Schema.optional(Schema.String),
 });

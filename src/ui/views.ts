@@ -93,8 +93,8 @@ function verdict(h: H, result: LookupResult, close: Match[], loose: Match[]): No
   const { name } = result.source;
   const about = result.query ? `“${result.query}”` : `@${result.handle}`;
   const shown = result.query ? `${name} showed ${plural(close.length, "post")} with that text` : `${name} showed ${close.length === 1 ? "your post" : `${close.length} of your posts`}`;
-  const yes: Verdict = { kind: "yes", answer: "Yes.", detail: [shown + saidClause(close)] };
-  const { kind, answer, detail } = close.length ? yes : noMatch(h, result, loose);
+  const yes = (): Verdict => ({ kind: "yes", answer: "Yes.", detail: [shown + saidClause(close)] });
+  const { kind, answer, detail } = close.length ? yes() : noMatch(h, result, loose);
 
   return h.section([h.Class(`verdict ${kind}`)], [h.p([h.Class("about")], [about]), h.h2([], [answer]), h.p([], detail)]);
 }

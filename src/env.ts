@@ -5,12 +5,22 @@ export interface VideoParams {
   source: string;
 }
 
+/** JSON, as Workers AI takes and returns it. */
+export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+
+export type ModelInputs = { [key: string]: Json };
+
+/** Workers AI as this app calls it. The binding's own types do not list these models. */
+export interface ModelRunner {
+  run(model: string, inputs: ModelInputs): Promise<Json>;
+}
+
 export interface Env {
   MEDIA: DurableObjectNamespace<MediaContainer>;
   BUCKET: R2Bucket;
   DB: D1Database;
   POSTS: VectorizeIndex;
-  AI: Ai;
+  AI: ModelRunner;
   VIDEO_WORKFLOW: Workflow<VideoParams>;
   INTERNAL_TOKEN: string;
   /** Traces, logs and Issues go to this Sentry project over OTLP. No DSN turns telemetry off. */

@@ -7,7 +7,7 @@ runs Workers AI models over them.
 ## Where things live
 
 - `src/index.ts`: the Worker's routes and cron.
-- `src/workflow.ts`, `src/steps.ts`: the video Workflow. `src/pipeline.ts`: its pure functions.
+- `src/workflow.ts`, `src/steps.ts`, `src/job.ts`: the video Workflow and its extract job. `src/pipeline.ts`: its pure functions.
 - `src/lookup.ts`, `src/explore.ts`, `src/videos.ts`: search, explore page data, the video queue.
 - `src/ai.ts`: Workers AI calls. `src/runtime.ts`: D1, R2, Vectorize and HTTP calls, each with a span.
 - `src/telemetry/`: spans and errors, sent to Sentry over OTLP.

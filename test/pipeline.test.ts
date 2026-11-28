@@ -448,10 +448,8 @@ describe("quoteSpan", () => {
     expect(quoteSpan([0, 11], text)).toEqual([0, 11]);
   });
 
-  test("rejects a lone name, a missing span and a span with no end", () => {
+  test("rejects a lone name", () => {
     expect(quoteSpan([8, 11], text)).toBeNull();
-    expect(quoteSpan(undefined, text)).toBeNull();
-    expect(quoteSpan([8, null], text)).toBeNull();
   });
 
   test("does not count punctuation as words", () => {

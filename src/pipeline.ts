@@ -284,49 +284,61 @@ export const withCanonicalHandle = <T extends { handle: string }>(post: T, canon
  * A near handle under another display name is another person, so it stays apart.
  * Unknown lines have no handle to tell them apart, so a short one joins an unknown group only with the same words and no other display name.
  */
-export function groupPosts(observations: Observation[]): PostGroup[] {
-  interface Acc extends Omit<PostGroup, "text" | "slices"> {
-    handles: Map<string, number>;
-    names: Map<string, number>;
-    texts: string[];
-  }
+interface GroupInProgress extends Omit<PostGroup, "text" | "slices"> {
+  handles: Map<string, number>;
+  names: Map<string, number>;
+  texts: string[];
+}
 
-  const groups: Acc[] = [];
+/** The group a reader line belongs to, by the rules in `groupPosts`. */
+function findGroup(groups: GroupInProgress[], line: ReaderLine): GroupInProgress | undefined {
+  const norm = line.handle.toLowerCase();
+  const known = line.handle !== UNKNOWN_HANDLE;
+  const nameFits = (g: GroupInProgress) => !line.displayName || g.names.size === 0 || g.names.has(line.displayName);
+  const sameAuthor = (g: GroupInProgress) => [...g.handles.keys()].some((h) => h.toLowerCase() === norm || (sameHandle(h.toLowerCase(), norm) && nameFits(g)));
+
+  return (known ? groups.find((g) => sameAuthor(g) && g.texts.some((t) => sameScrolledPost(t, line.text))) : undefined)
+    ?? groups.find((g) => g.texts.some((t) => sameLongPost(t, line.text)))
+    ?? (known ? undefined : groups.find((g) => g.handles.size === 0 && nameFits(g) && g.texts.some((t) => sameWords(t, line.text))));
+}
+
+const newGroup = (line: ReaderLine, second: number): GroupInProgress => ({
+  handles: new Map(),
+  names: new Map(),
+  texts: [],
+  handle: line.handle,
+  displayName: line.displayName,
+  firstSeen: second,
+  lastSeen: second,
+  frameSecond: second,
+});
+
+/** Adds one reading of the post to its group: the handle and name seen, and the text when it is a new slice. */
+function addToGroup(group: GroupInProgress, line: ReaderLine, second: number): void {
+  if (line.handle !== UNKNOWN_HANDLE) bump(group.handles, line.handle);
+
+  if (line.displayName) bump(group.names, line.displayName);
+  const same = group.texts.findIndex((t) => t === line.text || jaccard(t, line.text) >= JACCARD_SAME_POST);
+
+  if (same < 0) group.texts.push(line.text);
+  else if (line.text.length > group.texts[same].length) group.texts[same] = line.text;
+  group.lastSeen = Math.max(group.lastSeen, second);
+  group.handle = mostCommon(group.handles) || UNKNOWN_HANDLE;
+  group.displayName = mostCommon(group.names);
+}
+
+export function groupPosts(observations: Observation[]): PostGroup[] {
+  const groups: GroupInProgress[] = [];
 
   for (const { second, line } of [...observations].sort((a, b) => a.second - b.second)) {
-    const norm = line.handle.toLowerCase();
-    const known = line.handle !== UNKNOWN_HANDLE;
-    const nameFits = (g: Acc) => !line.displayName || g.names.size === 0 || g.names.has(line.displayName);
-    const sameAuthor = (g: Acc) => [...g.handles.keys()].some((h) => h.toLowerCase() === norm || (sameHandle(h.toLowerCase(), norm) && nameFits(g)));
-
-    let group = (known ? groups.find((g) => sameAuthor(g) && g.texts.some((t) => sameScrolledPost(t, line.text))) : undefined)
-      ?? groups.find((g) => g.texts.some((t) => sameLongPost(t, line.text)))
-      ?? (known ? undefined : groups.find((g) => g.handles.size === 0 && nameFits(g) && g.texts.some((t) => sameWords(t, line.text))));
+    let group = findGroup(groups, line);
 
     if (!group) {
-      group = {
-        handles: new Map(),
-        names: new Map(),
-        texts: [],
-        handle: line.handle,
-        displayName: line.displayName,
-        firstSeen: second,
-        lastSeen: second,
-        frameSecond: second,
-      };
+      group = newGroup(line, second);
       groups.push(group);
     }
 
-    if (known) bump(group.handles, line.handle);
-
-    if (line.displayName) bump(group.names, line.displayName);
-    const same = group.texts.findIndex((t) => t === line.text || jaccard(t, line.text) >= JACCARD_SAME_POST);
-
-    if (same < 0) group.texts.push(line.text);
-    else if (line.text.length > group.texts[same].length) group.texts[same] = line.text;
-    group.lastSeen = Math.max(group.lastSeen, second);
-    group.handle = mostCommon(group.handles) || UNKNOWN_HANDLE;
-    group.displayName = mostCommon(group.names);
+    addToGroup(group, line, second);
   }
 
   return groups.map(({ handle, displayName, texts, firstSeen, lastSeen, frameSecond }) => ({
@@ -349,11 +361,11 @@ export interface TranscriptWindow {
   offsets: [number, number][];
 }
 
-const CAPTION_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&nbsp;": " " };
+const CAPTION_ENTITIES = new Map([["&amp;", "&"], ["&lt;", "<"], ["&gt;", ">"], ["&quot;", '"'], ["&#39;", "'"], ["&nbsp;", " "]]);
 
 /** YouTube captions escape HTML and mark a speaker change with a bare ">>". */
 export function decodeCaption(word: string): string {
-  const decoded = word.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (e) => CAPTION_ENTITIES[e]).trim();
+  const decoded = word.replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (e) => CAPTION_ENTITIES.get(e) ?? e).trim();
 
   return decoded === ">>" ? "" : decoded;
 }
@@ -382,11 +394,7 @@ export function timeAtOffset(offsets: [number, number][], char: number): number 
 const MIN_QUOTE_WORDS = 3;
 
 /** Clairic's span, or null if it is too short to be a reading: a lone "Jev" gives no time worth linking to. */
-export function quoteSpan(span: unknown, transcript: string): [number, number] | null {
-  if (!Array.isArray(span)) return null;
-  const [start, end] = span;
-
-  if (typeof start !== "number" || typeof end !== "number") return null;
+export function quoteSpan([start, end]: readonly [number, number], transcript: string): [number, number] | null {
   const words = transcript.slice(start, end).split(/\s+/).filter((word) => /[\p{L}\p{N}]/u.test(word));
 
   return words.length < MIN_QUOTE_WORDS ? null : [start, end];
@@ -421,29 +429,31 @@ const isTerminator = (c: string | undefined) => c === "." || c === "?" || c === 
  * Caption text has no punctuation, so the character cap is what usually applies.
  */
 export function expandSentence(text: string, spanStart: number, spanEnd: number, maxExtra = 120): string {
+  return text.slice(sentenceStart(text, spanStart, maxExtra), sentenceEnd(text, spanEnd, maxExtra)).trim();
+}
+
+/** Back from the span to the sentence's first character. At the cap it moves on to the next word, so no word is cut. */
+function sentenceStart(text: string, spanStart: number, maxExtra: number): number {
   const lo = Math.max(0, spanStart - maxExtra);
   let start = spanStart;
 
   while (start > lo && !isTerminator(text[start - 1])) start--;
+  const cutWord = start === lo && lo > 0 && !isTerminator(text[start - 1]) && text[start - 1] !== " ";
+  const space = cutWord ? text.indexOf(" ", start) : -1;
 
-  if (start === lo && lo > 0 && !isTerminator(text[start - 1]) && text[start - 1] !== " ") {
-    const space = text.indexOf(" ", start);
+  return space !== -1 && space < spanStart ? space + 1 : start;
+}
 
-    if (space !== -1 && space < spanStart) start = space + 1;
-  }
-
+/** On from the span to the sentence's end. At the cap it moves back to the last whole word. */
+function sentenceEnd(text: string, spanEnd: number, maxExtra: number): number {
   const hi = Math.min(text.length, spanEnd + maxExtra);
   let end = spanEnd;
 
   while (end < hi && !isTerminator(text[end - 1])) end++;
+  const cutWord = end === hi && hi < text.length && !isTerminator(text[end - 1]) && text[end] !== " ";
+  const space = cutWord ? text.lastIndexOf(" ", end) : -1;
 
-  if (end === hi && hi < text.length && !isTerminator(text[end - 1]) && text[end] !== " ") {
-    const space = text.lastIndexOf(" ", end);
-
-    if (space > spanEnd) end = space;
-  }
-
-  return text.slice(start, end).trim();
+  return space > spanEnd ? space : end;
 }
 
 export function formatTime(totalSeconds: number): string {
@@ -459,11 +469,11 @@ interface WhisperSegment {
   start: number;
   end: number;
   text: string;
-  words?: { word: string; start: number; end: number }[];
+  words?: readonly { word: string; start: number; end?: number }[];
 }
 
 /** Word timings from a Whisper result; segments without word data get evenly spread words. */
-export function wordsFromSegments(segments: WhisperSegment[], offsetSeconds: number): Word[] {
+export function wordsFromSegments(segments: readonly WhisperSegment[], offsetSeconds: number): Word[] {
   const words: Word[] = [];
 
   for (const segment of segments) {

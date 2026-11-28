@@ -1,5 +1,5 @@
 import { getContainer } from "@cloudflare/containers";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Option, Result, Schema } from "effect";
 import { MAX_IN_FLIGHT, MAX_RETRIES, MIN_DURATION_SECONDS, RETRY_BASE_MINUTES, type Source } from "./config";
 import { Bindings, annotate, d1Batch, httpFetch, span, sql, traceHeaders } from "./runtime";
 import { errorMessage, workflowTraceId } from "./telemetry";
@@ -150,17 +150,20 @@ export const discoverRss = (source: Source) =>
     return inserted;
   }).pipe(span(`discover ${source.id}`, "function", { "video.source": source.id }));
 
-interface ListedVideo {
-  id: string;
-  title?: string;
-  publishedAt?: string | null;
-  duration?: number | null;
-  liveStatus?: string | null;
-}
+/** One video in the answer of the container's `/list`, as `list_videos` in container/server.py writes it. */
+const ListedVideo = Schema.Struct({
+  id: Schema.String,
+  title: Schema.optional(Schema.NullOr(Schema.String)),
+  publishedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  duration: Schema.optional(Schema.NullOr(Schema.Number)),
+  liveStatus: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+const decodeListing = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ videos: Schema.Array(ListedVideo) })));
 
 export const backfill = (source: Source, days: number) =>
   Effect.gen(function* () {
-    const videos: ListedVideo[] = [];
+    const videos: (typeof ListedVideo.Type)[] = [];
 
     for (const channelId of source.youtubeChannelIds) {
       const res = yield* containerFetch("admin", "/list", {
@@ -172,7 +175,10 @@ export const backfill = (source: Source, days: number) =>
       const body = yield* Effect.promise(() => res.text());
 
       if (!res.ok) return yield* Effect.fail(new Error(`container /list: ${res.status} ${body.slice(0, 200)}`));
-      videos.push(...(JSON.parse(body) as { videos: ListedVideo[] }).videos);
+      const listing = Option.getOrNull(decodeListing(body));
+
+      if (!listing) return yield* Effect.fail(new Error(`container /list answered something else than videos: ${body.slice(0, 200)}`));
+      videos.push(...listing.videos);
     }
 
     const cutoff = Date.now() - days * 86_400_000;
@@ -217,7 +223,7 @@ const runActive = (videoId: string) =>
     if (!run) return false;
 
     const instance = yield* Effect.promise(() => env.VIDEO_WORKFLOW.get(run.instance_id).catch((err) => {
-      if (String((err as Error)?.message).includes("instance.not_found")) return null;
+      if (errorMessage(err).includes("instance.not_found")) return null;
       throw err;
     }));
 
@@ -251,7 +257,7 @@ export const startWorkflow = (videoId: string, source: string) =>
         .pipe(span("start workflow", "function", { "video.id": videoId, "workflow.instance_id": id, "workflow.trace_id": traceId })),
     );
 
-    if (started._tag === "Failure") {
+    if (Result.isFailure(started)) {
       yield* endRun(id, "error", `workflow start failed: ${errorMessage(started.failure).slice(0, 400)}`);
 
       return yield* Effect.fail(started.failure);

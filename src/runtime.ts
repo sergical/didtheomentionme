@@ -57,7 +57,7 @@ export function sqlSummary(sql: string): string {
   return [verb, ...tables].join(" ");
 }
 
-/** What D1 reports about one statement. A batch and `first()` report nothing. */
+/** What D1 reports about one statement. The span of a batch or of `first()` gets none of it. */
 type D1Meta = D1Result["meta"];
 
 const d1Attributes = (meta: D1Meta | undefined) =>

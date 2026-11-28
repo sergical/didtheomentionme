@@ -7,9 +7,9 @@ export type Tab = "handle" | "post" | "text";
 /** The tab of the search a page shows. */
 export const tabFor = (input: LookupInput): Tab => (input.q?.trim() ? "text" : input.tweet.trim() && !input.handle.trim() ? "post" : "handle");
 
-// The page data crosses from the Worker to the browser as JSON in the page, so these schemas are its contract. The
-// lookup ones repeat the types of `../lookup`, which the browser script cannot import, and the type check keeps the
-// two the same: the Worker passes its types in, and the views pass these types to code that takes the Worker's.
+// The page data crosses from the Worker to the browser as JSON in the page, so these schemas are its contract. They
+// repeat the types of `../lookup` and `../explore`, which the browser script cannot import, and the type check keeps
+// them the same: the Worker passes its types in, and the views pass these types to code that takes the Worker's.
 
 const Coverage = Schema.Struct({ videos: Schema.Number, from: Schema.NullOr(Schema.String), to: Schema.NullOr(Schema.String) });
 

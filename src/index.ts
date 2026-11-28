@@ -1,4 +1,4 @@
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Result } from "effect";
 import { authorized } from "./auth";
 import { DEFAULT_SOURCE, SOURCES, getSource } from "./config";
 import type { Env } from "./env";
@@ -70,29 +70,35 @@ const pageSources = (requested: string | null) =>
 
 const html = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 
-const lookupRoutes = (url: URL) =>
+const searchInput = (url: URL) =>
+  ({ handle: url.searchParams.get("handle") ?? "", tweet: url.searchParams.get("tweet") ?? "", q: url.searchParams.get("q") ?? "", source: url.searchParams.get("source") });
+
+const isEmpty = (input: ReturnType<typeof searchInput>) => !input.handle.trim() && !input.tweet.trim() && !input.q.trim();
+
+/** `/api/lookup`: the result of a search, as JSON. */
+const lookupApi = (url: URL) =>
   Effect.gen(function* () {
-    const input = { handle: url.searchParams.get("handle") ?? "", tweet: url.searchParams.get("tweet") ?? "", q: url.searchParams.get("q") ?? "", source: url.searchParams.get("source") };
-    const asJson = url.pathname === "/api/lookup";
-    const empty = !input.handle.trim() && !input.tweet.trim() && !input.q.trim();
+    const input = searchInput(url);
 
-    if (empty && asJson) return Response.json({ error: "handle, tweet or q is required" }, { status: 400 });
+    if (isEmpty(input)) return Response.json({ error: "handle, tweet or q is required" }, { status: 400 });
+    const result = yield* Effect.result(lookup(input));
 
-    if (asJson) {
-      const result = yield* Effect.result(lookup(input));
+    return Result.isSuccess(result) ? Response.json(result.success) : Response.json({ error: result.failure.message }, { status: 400 });
+  });
 
-      return result._tag === "Success" ? Response.json(result.success) : Response.json({ error: result.failure.message }, { status: 400 });
-    }
-
+/** `/`: the lookup page, with the result or the error of the search in its URL. */
+const lookupPage = (url: URL) =>
+  Effect.gen(function* () {
+    const input = searchInput(url);
     const pageInput = { ...input, source: pageSourceId(input.source) };
     // The picker's counts and the lookup need nothing from each other, so they run at once.
-    const [{ source, sources }, result] = yield* Effect.all([pageSources(input.source), empty ? Effect.succeed(undefined) : Effect.result(lookup(pageInput))], { concurrency: 2 });
+    const [{ source, sources }, result] = yield* Effect.all([pageSources(input.source), isEmpty(input) ? Effect.succeed(undefined) : Effect.result(lookup(pageInput))], { concurrency: 2 });
     const page = { source, sources, input: pageInput };
     const render = (data: PageData, status = 200) => Effect.map(renderPage(data).pipe(span("render page", "ui.render")), (body) => html(body, status));
 
     if (!result) return yield* render(page);
 
-    return yield* (result._tag === "Success" ? render({ ...page, result: result.success }) : render({ ...page, error: result.failure.message }, 400));
+    return yield* (Result.isSuccess(result) ? render({ ...page, result: result.success }) : render({ ...page, error: result.failure.message }, 400));
   });
 
 const exploreRoute = (url: URL) =>
@@ -128,7 +134,9 @@ function route(request: Request, env: Env, url: URL, waitUntil: (p: Promise<unkn
 
   if (frameMatch) return ["/frame/:videoId/:second.jpg", frame(frameMatch[1], frameMatch[2], url.searchParams.get("size") === "640" ? "f640" : "f1920")];
 
-  if (pathname === "/" || pathname === "/api/lookup") return [pathname, lookupRoutes(url)];
+  if (pathname === "/") return [pathname, lookupPage(url)];
+
+  if (pathname === "/api/lookup") return [pathname, lookupApi(url)];
 
   if (pathname === "/explore") return [pathname, exploreRoute(url)];
 

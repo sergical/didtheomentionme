@@ -60,7 +60,7 @@ export class MediaContainer extends Container<Env> {
     // Assign instead of declaring a static field: the base class's setter must run, because
     // ContainerProxy looks handlers up in the registry that the setter fills.
     this.outboundByHost = {
-      [UPLOAD_HOST]: (request: Request, env: unknown) => route(request, env as Env),
+      [UPLOAD_HOST]: route,
     };
   }
 

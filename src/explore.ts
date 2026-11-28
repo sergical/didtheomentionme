@@ -1,16 +1,41 @@
 import { SOURCES } from "./config";
 import { Effect } from "effect";
 import { span, sql, type App } from "./runtime";
-import { reading } from "./lookup";
-import type { ExploreData, ExploreSort, LongRead } from "./ui/model";
+import { reading, type Reading } from "./lookup";
 
-export type { ExploreData, ExploreSort };
+export type ExploreSort = "newest" | "posts";
 
-type Totals = ExploreData["totals"];
+export interface LongRead {
+  videoId: string;
+  title: string | null;
+  handle: string;
+  displayName: string | null;
+  quote: string;
+  reading: Reading;
+  readAt: number;
+  firstSeen: number;
+  lastSeen: number;
+  frameSecond: number;
+}
 
-type Account = ExploreData["accounts"][number];
+/** What one creator showed across every scanned video. */
+export interface ExploreStats {
+  xHandle: string;
+  sort: ExploreSort;
+  totals: { videos: number; seconds: number; from: string | null; to: string | null; shown: number; aloud: number };
+  accounts: { handleNorm: string; handle: string; shown: number; aloud: number; videos: number }[];
+  /** Posts first seen in each tenth of a video, from the start. */
+  position: number[];
+  longReads: LongRead[];
+  videos: { id: string; title: string | null; publishedAt: string | null; duration: number | null; shown: number; aloud: number; accounts: { handle: string; shown: number }[] }[];
+  crossovers: { other: { id: string; name: string; xHandle: string }; showed: number; shownBy: number }[];
+}
 
-type Video = ExploreData["videos"][number];
+type Totals = ExploreStats["totals"];
+
+type Account = ExploreStats["accounts"][number];
+
+type Video = ExploreStats["videos"][number];
 
 const TOP_ACCOUNTS = 12;
 const LONG_READS = 4;
@@ -25,7 +50,7 @@ const DONE = "JOIN videos v ON v.id = m.video_id WHERE v.source = ? AND v.status
  * The page's numbers for one creator. The creator picker's data comes apart, so a page can run both at once instead of
  * one after the other.
  */
-export const exploreData = (sourceId: string, sort: ExploreSort): Effect.Effect<Omit<ExploreData, "source" | "sources">, never, App> => Effect.gen(function* () {
+export const exploreData = (sourceId: string, sort: ExploreSort): Effect.Effect<ExploreStats, never, App> => Effect.gen(function* () {
   const source = { id: sourceId };
   const all = sql.all;
   const handles = SOURCES.map((s) => s.xHandle.toLowerCase());

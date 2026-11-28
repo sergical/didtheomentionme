@@ -11,10 +11,13 @@ import { Message, tabFor, type Model, type PageFlags, type SourceRef, type Tab }
 import { formatDate, hue, plural } from "./text";
 
 type H = HtmlBuilder<Message>;
+
 type Node = ReturnType<H["div"]>;
+
 type Child = Node | string;
 
 const WORDS = /[\p{L}\p{N}]+/gu;
+
 /** A text match with at least this share of the query words is shown as a close match. */
 const CLOSE_MATCH = 0.75;
 const SHOWN = 10;
@@ -23,10 +26,13 @@ export const youtube = (videoId: string, seconds: number) =>
   `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&t=${Math.floor(seconds)}s`;
 
 type Icon = (h: H) => Node;
+
 const svg = (h: H, viewBox: string, d: string, paint: Attribute<Message>[]) =>
   h.svg([h.ViewBox(viewBox), h.AriaHidden(true)], [h.path([h.Attribute("d", d), ...paint], [])]);
+
 const stroke = (h: H, width: string): Attribute<Message>[] => [h.Fill("none"), h.Attribute("stroke", "currentColor"), h.Attribute("stroke-width", width),
   h.Attribute("stroke-linecap", "round"), h.Attribute("stroke-linejoin", "round")];
+
 const PLAY: Icon = (h) => svg(h, "0 0 10 12", "M0 0v12l10-6z", [h.Fill("currentColor")]);
 const CHEVRON: Icon = (h) => svg(h, "0 0 12 12", "M2.5 4.5 6 8l3.5-3.5", stroke(h, "1.75"));
 const CHECK: Icon = (h) => svg(h, "0 0 16 16", "m3.5 8.5 3 3 6-7", stroke(h, "2"));
@@ -44,22 +50,29 @@ function highlight(h: H, text: string, words: Set<string>): Child[] {
   if (words.size === 0) return [text];
   const out: Child[] = [];
   let last = 0;
+
   for (const m of text.matchAll(WORDS)) {
     const before = text.slice(last, m.index);
+
     if (before) out.push(before);
     out.push(words.has(m[0].toLowerCase()) ? h.mark([], [m[0]]) : m[0]);
     last = m.index + m[0].length;
   }
+
   const rest = text.slice(last);
+
   if (rest) out.push(rest);
+
   return out;
 }
 
 /** Starts long text a few words before the first word in `words`, so the clamped excerpt shows the match. */
 function fromFirstHit(text: string, words: Set<string>): string {
   const hit = [...text.matchAll(WORDS)].find((m) => words.has(m[0].toLowerCase()));
+
   if (!hit || hit.index < 60) return text;
   const space = text.indexOf(" ", hit.index - 40);
+
   return `…${text.slice(space === -1 || space >= hit.index ? hit.index : space + 1)}`;
 }
 
@@ -70,12 +83,15 @@ export function creatorPicker(h: H, source: SourceRef, sources: SourceRef[], hre
   if (sources.length < 2) return source.name;
   const { attr } = at(h);
   const names = sources.map((s) => h.span(s.id === source.id ? [] : [h.AriaHidden(true)], [s.name]));
+
   const items = sources.map((s) => {
     const c = s.coverage;
     const meta = c.videos ? `${plural(c.videos, "video")} · ${formatDate(c.from, false)} to ${formatDate(c.to, false)}` : "First videos in progress";
     const current = s.id === source.id;
+
     return h.a([h.Href(href(s.id)), ...(current ? [attr("aria-current", "page")] : [])], [face(h, s), s.name, h.small([], [meta]), ...(current ? [icon(h, CHECK)] : [])]);
   });
+
   return h.details([h.Class("pick")], [
     h.summary([], [face(h, source), h.span([h.Class("names")], names), icon(h, CHEVRON)]),
     h.nav([h.Class("menu"), h.AriaLabel("Creators")], items),
@@ -96,17 +112,22 @@ function verdict(h: H, result: LookupResult, close: Match[], loose: Match[]): No
   const { name } = result.source;
   const { videos, from, to } = result.coverage;
   const about = result.query ? `“${result.query}”` : `@${result.handle}`;
+
   const section = (kind: string, answer: string, detail: Child[]) =>
     h.section([h.Class(`verdict ${kind}`)], [h.p([h.Class("about")], [about]), h.h2([], [answer]), h.p([], detail)]);
 
   if (close.length === 0) {
     if (loose.length) return section("maybe", "Not exactly.", [`No post has most of these words. ${plural(loose.length, "post")} ${loose.length === 1 ? "has" : "have"} some of them.`]);
+
     if (videos === 0) return section("no", "Not yet.", [`No ${name} videos are indexed yet.`]);
+
     const next: Child[] = result.query
       ? ["Try other words, or ", switchTab(h, "handle", "search by handle"), "."]
       : ["Handle cropped out of the screenshot? ", switchTab(h, "text", "Search by words from the post"), "."];
+
     return section("no", "Not yet.", [`Nothing in the ${plural(videos, "video")} from ${formatDate(from, false)} to ${formatDate(to)}. `, ...next]);
   }
+
   const read = close.filter((m) => m.readAloud && m.readAloud.reading !== "comment").length;
   const talked = close.filter((m) => m.readAloud?.reading === "comment").length;
   const one = close.length === 1;
@@ -114,20 +135,25 @@ function verdict(h: H, result: LookupResult, close: Match[], loose: Match[]): No
   const count = (n: number) => (n < close.length ? String(n) : one ? "it" : close.length === 2 ? "both" : "every one");
   const readCount = one && close[0].readAloud?.reading === "part" ? "part of it" : count(read);
   const notRead = `but did not read ${one ? "it" : "them"} aloud.`;
+
   const said = read && talked
     ? `, read ${readCount} aloud and talked about ${count(talked)}.`
     : read ? ` and read ${readCount} aloud.`
     : talked ? ` and talked about ${count(talked)}, ${notRead}`
     : `, ${notRead}`;
+
   return section("yes", "Yes.", [shown + said]);
 }
 
 function card(h: H, m: Match, i: number, words: Set<string>, sourceName: string, showText: boolean, eager: boolean): Node {
   const { newTab } = at(h);
+
   const seen = m.times.map((t, n) =>
     h.a([h.Class("chip"), ...newTab, h.Href(youtube(m.videoId, t))], [...(n === 0 ? [icon(h, PLAY)] : []), h.span([h.Class("sr-only")], ["On screen at "]), formatTime(t)]));
+
   const said = m.readAloud ? saidFigure(h, sourceName, m.videoId, m.readAloud) : h.p([h.Class("quiet")], ["Not read aloud."]);
   const who = showText ? [] : [`Post by ${m.handle === UNKNOWN_HANDLE ? "an unknown account" : m.handle}: `];
+
   return h.li([h.Class("match"), h.Id(`mention-${m.videoId}-${m.firstSeen}`), h.Attribute("style", `--i:${i}`)], [
     h.a([h.Class("frame"), ...newTab, h.Href(youtube(m.videoId, m.firstSeen)), h.Tabindex(-1), h.AriaHidden(true)], [
       h.img([h.Src(m.frameUrl), h.Alt(""), h.Loading(eager && i < 2 ? "eager" : "lazy"), h.Decoding("async")]),
@@ -150,6 +176,7 @@ const more = (h: H, summary: string, body: Node, open = false) =>
 function shareControls(h: H, model: Model, url: string, title: string): Node {
   const intent = `https://x.com/intent/post?${new URLSearchParams({ text: `${title} Found the receipts.`, url })}`;
   const copied = (button: "share" | "copy", label: string) => (model.copied[button] ? "✓ Copied" : label);
+
   return h.div([h.Class("share")], [
     h.button([h.Type("button"), h.Class("share-primary"), h.Attribute("data-share", ""), h.OnClick(Message.ClickedShare({ url, title }))], [copied("share", "Share result")]),
     h.button([h.Type("button"), h.Attribute("data-copy", ""), h.Hidden(model.hideCopy), h.OnClick(Message.ClickedCopy({ url }))], [copied("copy", "Copy link")]),
@@ -163,8 +190,10 @@ function results(h: H, model: Model, result: LookupResult, url: string, title: s
   const isClose = (m: Match) => !result.query || (m.overlap ?? 0) >= CLOSE_MATCH;
   const close = result.matches.filter(isClose);
   const loose = result.matches.filter((m) => !isClose(m));
+
   const cards = (list: Match[], eager = false) =>
     h.ol([h.Class("matches")], list.map((m, i) => card(h, m, i, words, result.source.name, Boolean(result.query || result.tweet), eager)));
+
   return [
     verdict(h, result, close, loose),
     shareControls(h, model, url, title),
@@ -212,6 +241,7 @@ function field(h: H, sourceId: string, input: { handle: string; tweet: string; q
   const entries = ENTRIES(input);
   const searched = tabFor(input);
   const errorFor = (id: Tab) => (id === searched ? error : undefined);
+
   return h.div([], [
     ...entries.map(({ id }) => h.form([h.Id(`f-${id}`), h.Method("get"), h.Action("/")], [h.input([h.Type("hidden"), h.Name("source"), h.Value(sourceId)])])),
     h.div([h.Class("field")], [
@@ -227,6 +257,7 @@ function field(h: H, sourceId: string, input: { handle: string; tweet: string; q
     ]),
     h.div([h.Class("hints")], entries.map(({ id, hint }) => {
       const e = errorFor(id);
+
       return h.p([h.Class(`hint hint-${id}${e ? " error" : ""}`), h.Id(`${id}-hint`), ...(e ? [h.Role("alert")] : [])], [e ?? hint]);
     })),
   ]);
@@ -243,6 +274,7 @@ function lookupView(h: H, model: Model, data: Extract<PageFlags, { kind: "lookup
   const title = shareTitle(source.name, result);
   const path = resultPath(input, source.id);
   const name = source.name;
+
   return h.main([...(result || error ? [h.Class("compact")] : []), h.OnMount(PageBehaviors())], [
     h.h1([], ["Did ", creatorPicker(h, source, sources, (id) => resultPath(input, id)), " mention ", h.em([], ["me?"])]),
     h.p([h.Class("lede")], ["We scan every video for X posts on screen, then check the transcript to see if they were read aloud. ", h.a([h.Href(explorePath(source.id))], [`See everything ${name} showed`]), "."]),
@@ -282,17 +314,21 @@ function stats(h: H, { totals }: Explore): Node {
     ["Posts on screen", number(totals.shown)],
     ["Read aloud", `${percent(totals.aloud, totals.shown)}%`],
   ];
+
   return h.dl([h.Class("stats")], tiles.map(([label, value]) => h.div([], [h.dt([], [label]), h.dd([], [value])])));
 }
 
 function accounts(h: H, data: Explore): Node[] {
   const { accounts: list, source, xHandle } = data;
+
   if (list.length === 0) return [];
   const max = list[0].shown;
+
   const rows = list.map((a, i) => {
     const handle = handleOf(a.handle);
     const own = a.handleNorm === xHandle.toLowerCase() ? [h.span([h.Class("badge")], ["Own account"])] : [];
     const aloud = a.aloud ? ` · ${number(a.aloud)} read aloud` : "";
+
     return h.li([], [h.a([h.Href(searchLink(a.handle, source.id))], [
       h.span([h.Class("rank")], [String(i + 1)]),
       h.span([h.Class("avatar"), h.Attribute("style", `--hue:${hue(handle)}`), h.AriaHidden(true)], [handle.charAt(1).toUpperCase()]),
@@ -304,11 +340,13 @@ function accounts(h: H, data: Explore): Node[] {
       ]),
     ])]);
   });
+
   const cross = data.crossovers.filter((c) => c.showed || c.shownBy).map((c) =>
     h.p([h.Class("crossover")], [
       `${source.name} showed `, h.a([h.Href(searchLink(c.other.xHandle, source.id))], [`@${c.other.xHandle}`]), ` ${plural(c.showed, "time")}. `,
       `${c.other.name} showed `, h.a([h.Href(searchLink(xHandle, c.other.id))], [`@${xHandle}`]), ` ${plural(c.shownBy, "time")}.`,
     ]));
+
   return [h.section([h.AriaLabelledBy("accounts")], [
     h.h2([h.Id("accounts")], ["Most shown accounts"]),
     h.p([h.Class("sub")], ["Times each account was on screen across every video. Open one to see each moment."]),
@@ -320,17 +358,20 @@ function accounts(h: H, data: Explore): Node[] {
 function position(h: H, data: Explore): Node[] {
   const bins = data.position;
   const total = bins.reduce((a, b) => a + b, 0);
+
   if (total === 0) return [];
   const max = Math.max(...bins);
   const peak = bins.indexOf(max);
   const firstHalf = percent(bins.slice(0, bins.length / 2).reduce((a, b) => a + b, 0), total);
   const lead = firstHalf >= 50 ? `${firstHalf}% of posts show up in the first half of a video.` : `${100 - firstHalf}% of posts show up in the second half of a video.`;
   const step = 100 / bins.length;
+
   const cols = bins.map((n, i) =>
     h.li([h.Class(`col${i === peak ? " peak" : ""}`), h.Tabindex(0), h.AriaLabel(`${i * step}–${(i + 1) * step}% of the way through: ${plural(n, "post")}`), h.Attribute("style", `--h:${((100 * n) / max).toFixed(1)}%`)], [
       h.b([h.AriaHidden(true)], [number(n)]),
       h.span([], []),
     ]));
+
   return [h.section([h.AriaLabelledBy("when")], [
     h.h2([h.Id("when")], ["When posts show up"]),
     h.p([h.Class("sub")], [`${lead} Each bar is one tenth of a video.`]),
@@ -342,10 +383,12 @@ function position(h: H, data: Explore): Node[] {
 function longReads(h: H, { longReads: list, source }: Explore): Node[] {
   if (list.length === 0) return [];
   const { newTab } = at(h);
+
   const cards = list.map((r) => {
     const known = r.handle !== UNKNOWN_HANDLE;
     const name = r.displayName || (known ? r.handle.replace(/^@/, "") : "Unknown account");
     const link = youtube(r.videoId, r.firstSeen);
+
     return h.li([h.Class("match")], [
       h.a([h.Class("frame"), ...newTab, h.Href(link), h.Tabindex(-1), h.AriaHidden(true)], [h.img([h.Src(`/frame/${r.videoId}/${r.frameSecond}.jpg`), h.Alt(""), h.Loading("lazy"), h.Decoding("async")])]),
       h.div([h.Class("body")], [
@@ -356,6 +399,7 @@ function longReads(h: H, { longReads: list, source }: Explore): Node[] {
       ]),
     ]);
   });
+
   return [h.section([h.AriaLabelledBy("long")], [
     h.h2([h.Id("long")], ["Read aloud and kept on screen"]),
     h.p([h.Class("sub")], [`The posts ${source.name} read out and stayed on the longest.`]),
@@ -366,19 +410,26 @@ function longReads(h: H, { longReads: list, source }: Explore): Node[] {
 function videoList(h: H, data: Explore): Node {
   const { source, sort } = data;
   const max = Math.max(1, ...data.videos.map((v) => v.shown));
+
   const sortLink = (to: "newest" | "posts", label: string) =>
     h.a([h.Href(`${explorePath(source.id, to)}#videos`), ...(sort === to ? [h.Attribute("aria-current", "true")] : [])], [label]);
+
   const rows = data.videos.map((v) => {
     const count: Child[] = v.shown ? [number(v.shown), h.span([h.Class("sr-only")], [" posts"])] : [h.span([h.Class("none")], ["None"])];
     const meta: Child[] = [h.time([h.Attribute("datetime", v.publishedAt ?? "")], [formatDate(v.publishedAt)])];
+
     for (const part of [v.duration ? formatTime(v.duration) : "", v.aloud ? `${number(v.aloud)} read aloud` : ""]) if (part) meta.push(` · ${part}`);
+
     const shown = v.accounts.slice(0, ACCOUNTS_PER_VIDEO).map((a) =>
       h.li([], [h.a([h.Href(searchLink(a.handle, source.id))], [handleOf(a.handle), ...(a.shown > 1 ? [" ", h.small([], [`×${a.shown}`])] : [])])]));
+
     const rest = v.accounts.length - shown.length;
     const watch = h.a([...at(h).newTab, h.Href(youtube(v.id, 0))], ["Watch on YouTube"]);
+
     const body = v.accounts.length
       ? [h.ul([h.Class("handles"), h.AriaLabel("Accounts on screen")], shown), h.p([], [`${plural(v.accounts.length, "account")} on screen${rest > 0 ? `, the ${rest} least shown not listed` : ""}. `, watch])]
       : [h.p([], ["No X posts found on screen. ", watch])];
+
     return h.li([], [h.details([], [
       h.summary([], [
         h.span([h.Class("title")], [v.title ?? v.id]),
@@ -391,6 +442,7 @@ function videoList(h: H, data: Explore): Node {
       h.div([h.Class("opened")], body),
     ])]);
   });
+
   return h.section([h.AriaLabelledBy("videos")], [
     h.h2([h.Id("videos")], ["Every video"]),
     h.p([h.Class("sub")], [`${plural(data.videos.length, "video")} and the posts on screen in each. Open one to see the accounts.`]),
@@ -403,6 +455,7 @@ function videoList(h: H, data: Explore): Node {
 function exploreView(h: H, data: Explore): Node {
   const { source, totals } = data;
   const range = totals.videos ? `, ${formatDate(totals.from, false)} to ${formatDate(totals.to)}` : "";
+
   return h.main([h.Class("explore"), h.OnMount(PageBehaviors())], [
     h.a([h.Class("back"), h.Href(resultPath({ handle: "", tweet: "" }, source.id))], ["← Search for your posts"]),
     h.h1([], ["What did ", creatorPicker(h, source, data.sources, (id) => explorePath(id, data.sort)), " ", h.em([], ["show?"])]),

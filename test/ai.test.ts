@@ -12,6 +12,7 @@ test("a long post that would pad a request past the limit starts a new one", () 
   const long = `theo: ${"x".repeat(6000)}`;
   const requests = embedRequests([...Array(49).fill(short), long]);
   expect(requests.flat()).toEqual([...Array(49).fill(short), long]);
+
   for (const request of requests) {
     const longest = Math.max(...request.map((text) => Math.ceil(text.length / 3)));
     expect(request.length * longest).toBeLessThanOrEqual(60_000);
@@ -24,21 +25,26 @@ test("short posts share one embed request", () => {
 
 test("a request over the token limit is split, and the vectors keep the order of the texts", async () => {
   const sizes: number[] = [];
+
   const env = {
     AI: {
       run: async (_model: string, { text }: { text: string[] }) => {
         sizes.push(text.length);
+
         if (text.length > 2) throw new Error("8007: Max context reached 68424 tokens but model supports only 60000");
+
         return { data: text.map((t) => [Number(t)]) };
       },
     },
   } as unknown as Env;
+
   expect(await run(env, embed(["1", "2", "3", "4", "5"]))).toEqual([[1], [2], [3], [4], [5]]);
   expect(sizes).toEqual([5, 2, 3, 1, 2]);
 });
 
 test("an embed error that is not the token limit is not split", async () => {
   let calls = 0;
+
   const env = {
     AI: {
       run: async () => {
@@ -47,11 +53,13 @@ test("an embed error that is not the token limit is not split", async () => {
       },
     },
   } as unknown as Env;
+
   await expect(run(env, embed(["1", "2"]))).rejects.toThrow("4007");
   expect(calls).toBe(1);
 });
 
 const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
 /** A call that runs `fn` each time the hedge starts it. */
 const calling = <T>(fn: () => Promise<T>) => Effect.suspend(() => Effect.tryPromise({ try: fn, catch: (err) => err }));
 const hedged = <T>(delayMs: number, fn: () => Promise<T>) => run({}, hedge("model", delayMs, calling(fn)));
@@ -104,9 +112,11 @@ test("a bad request is not retried", () => {
 test("the call that loses a hedge is interrupted", async () => {
   let interrupted = false;
   let calls = 0;
+
   const call = Effect.suspend(() =>
     ++calls === 1 ? Effect.promise(() => after(100, "stuck")).pipe(Effect.onInterrupt(() => Effect.sync(() => void (interrupted = true)))) : Effect.promise(() => after(1, "fresh")),
   );
+
   expect(await run({}, hedge("model", 5, call))).toBe("fresh");
   expect(interrupted).toBe(true);
 });
@@ -126,17 +136,21 @@ test("an interrupted model call is not sent again", async () => {
 describe("reading a frame", () => {
   const jpeg = new ArrayBuffer(1);
   const frame = { videoId: "v", second: 1, size: "f1920" } as const;
+
   const read = (page: number, chat: number, source = "X") => {
     let reads = 0;
+
     const env = {
       AI: {
         run: async (model: string, inputs: { max_tokens: number }) => {
           if (model.includes("flash")) return { answers: { page: { noul: page }, chat: { noul: chat } } };
           reads++;
+
           return { choices: [{ message: { content: inputs.max_tokens === 5 ? source : "@alice | Alice | a real post" } }] };
         },
       },
     } as unknown as Env;
+
     return { lines: run(env, readPosts(DETECTORS[0], jpeg, frame)), reads: () => reads };
   };
 
@@ -168,18 +182,23 @@ describe("reading a frame", () => {
 describe("findQuote", () => {
   const detector = DETECTORS[0];
   const post = { handle: "@trq212", displayName: "Thariq", text: "Claude Code now reads AGENTS.md files" };
+
   const ask = (span: [number, number] | null) => {
     const questions: string[] = [];
+
     const env = {
       AI: {
         run: async (_model: string, { fields }: { fields: { quote: { instructions: string } } }) => {
           questions.push(fields.quote.instructions);
+
           return { answers: { quote: { span } } };
         },
       },
     } as unknown as Env;
+
     return { env, questions };
   };
+
   const readTranscript = "okay so claude code now reads agents md files which is great for everyone here";
   const ownWordsTranscript = "also of note is that the latest update will use your agent file if you have one";
 

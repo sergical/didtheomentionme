@@ -15,6 +15,7 @@ const copied = (url: string) =>
   Effect.promise(async () => {
     try {
       await navigator.clipboard.writeText(url);
+
       return true;
     } catch {
       return false;
@@ -37,8 +38,10 @@ export const ShareLink = Command.define("ShareLink", {
   execute: ({ url, title }) =>
     Effect.gen(function* () {
       if (!navigator.share) return yield* copyMessage(url, "share");
+
       const outcome = yield* Effect.promise(() =>
         navigator.share({ title, text: title, url }).then(() => "shared", (err: unknown) => ((err as Error)?.name === "AbortError" ? "closed" : "failed")));
+
       return outcome === "failed" ? yield* copyMessage(url, "share") : Message.Shared();
     }),
 });
@@ -63,6 +66,7 @@ export const FocusEntry = Command.define("FocusEntry", {
       if (fromLabel && !matchMedia("(pointer: fine)").matches) return Message.Focused();
       yield* nextFrame;
       yield* Effect.ignore(Dom.focus(`#${tab}`, { preventScroll: fromLabel }));
+
       return Message.Focused();
     }),
 });
@@ -94,15 +98,18 @@ export function update(model: Model, message: Message): Return<Model, Message> {
       return { model, commands: [CopyLink({ url: message.url, button: "copy" })] };
     case "CopiedLink": {
       const copies = model.copies + 1;
+
       return {
         model: { ...model, copied: { ...model.copied, [message.button]: copies }, copies, status: "Result link copied." },
         commands: [ResetCopyLater({ button: message.button, copy: copies })],
       };
     }
+
     case "FailedCopy":
       return { model: { ...model, statusVisible: true, status: `Copy this link: ${message.url}` } };
     case "ResetCopy":
       if (model.copied[message.button] !== message.copy) return { model };
+
       return { model: { ...model, copied: { ...model.copied, [message.button]: 0 }, status: message.copy === model.copies ? "" : model.status } };
     case "SubmittedSearch":
       return { model: { ...model, busy: true } };

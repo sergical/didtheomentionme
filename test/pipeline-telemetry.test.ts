@@ -6,7 +6,9 @@ const op = (s: SentSpan) => String(s.attributes["sentry.op"]);
 const named = (sent: Capture, name: string) => sent.spans.filter((s) => s.name === name);
 
 const sent = captureOtlp();
+
 await runVideo({ dsn: DSN });
+
 sent.restore();
 
 describe("a video run sends one trace to Sentry", () => {
@@ -26,6 +28,7 @@ describe("a video run sends one trace to Sentry", () => {
     const root = sent.spans.find((s) => !s.parentSpanId)!;
     const phases = sent.spans.filter((s) => op(s) === "workflow.phase");
     expect(phases.map((s) => s.name).sort()).toEqual(["detect", "extract", "read", "store", "transcribe"]);
+
     for (const phase of phases) expect(phase.parentSpanId).toBe(root.spanId);
     const store = phases.find((s) => s.name === "store")!;
     expect(named(sent, "store-db")[0].parentSpanId).toBe(store.spanId);
@@ -35,6 +38,7 @@ describe("a video run sends one trace to Sentry", () => {
 
   test("with each query's whole SQL as its description, so Sentry tells different queries apart", () => {
     const queries = sent.spans.filter((s) => s.attributes["sentry.op"] === "db.query");
+
     for (const query of queries) expect(query.attributes["sentry.description"]).toBe(query.attributes["db.query.text"]);
     const updates = queries.filter((s) => s.name === "UPDATE videos").map((s) => s.attributes["sentry.description"]);
     expect(new Set(updates).size).toBeGreaterThan(1);

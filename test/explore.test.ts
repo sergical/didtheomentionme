@@ -19,6 +19,7 @@ function video(id: string, source: string, published: string, duration = 1000, s
 }
 
 let nextId = 1;
+
 function mention(videoId: string, handle: string, firstSeen: number, lastSeen = firstSeen + 2, quote: string | null = null) {
   db.query(
     `INSERT INTO mentions (id, video_id, detector, handle, handle_norm, text, first_seen, last_seen, frame_second, read_aloud_at, quote)

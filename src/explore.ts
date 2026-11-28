@@ -7,11 +7,14 @@ import type { ExploreData, ExploreSort, LongRead } from "./ui/model";
 export type { ExploreData, ExploreSort };
 
 type Totals = ExploreData["totals"];
+
 type Account = ExploreData["accounts"][number];
+
 type Video = ExploreData["videos"][number];
 
 const TOP_ACCOUNTS = 12;
 const LONG_READS = 4;
+
 // Most stored quotes are comments, not readings, so the query asks for more rows than the page shows.
 const LONG_READ_CANDIDATES = 40;
 const POSITION_BINS = 10;
@@ -26,6 +29,7 @@ export const exploreData = (sourceId: string, sort: ExploreSort): Effect.Effect<
   const source = { id: sourceId };
   const all = sql.all;
   const handles = SOURCES.map((s) => s.xHandle.toLowerCase());
+
   const [[videoTotals], [mentionTotals], accounts, bins, longReads, videos, videoAccounts, crossRows] = yield* Effect.all([
     all<Pick<Totals, "videos" | "seconds" | "from" | "to">>(
       `SELECT COUNT(*) AS videos, COALESCE(SUM(duration), 0) AS seconds, MIN(published_at) AS "from", MAX(published_at) AS "to"
@@ -76,15 +80,20 @@ export const exploreData = (sourceId: string, sort: ExploreSort): Effect.Effect<
   ], { concurrency: "unbounded" });
 
   const byVideo = new Map<string, Video["accounts"]>();
+
   for (const { videoId, handle, shown } of videoAccounts) {
     const list = byVideo.get(videoId) ?? [];
     list.push({ handle, shown });
     byVideo.set(videoId, list);
   }
+
   const position = Array.from({ length: POSITION_BINS }, (_, i) => bins.find((b) => b.bin === i)?.n ?? 0);
+
   const crossCount = (from: string, handle: string) =>
     crossRows.find((r) => r.source === from && r.handleNorm === handle.toLowerCase())?.n ?? 0;
+
   const self = SOURCES.find((s) => s.id === source.id)!;
+
   const crossovers = SOURCES.filter((s) => s.id !== source.id).map((s) => ({
     other: { id: s.id, name: s.name, xHandle: s.xHandle },
     showed: crossCount(source.id, s.xHandle),
@@ -106,11 +115,14 @@ export const exploreData = (sourceId: string, sort: ExploreSort): Effect.Effect<
 /** Readings, not comments, with one card for each frame or quote. Two rows can share both when one post was read twice. */
 function realReads(rows: (LongRead & { text: string })[]): LongRead[] {
   const seen = new Set<string>();
+
   return rows.flatMap(({ text, ...r }) => {
     const keys = [`${r.videoId}:${r.frameSecond}`, `${r.videoId}:${r.quote}`];
     const read = reading(r.quote, text);
+
     if (read === "comment" || keys.some((k) => seen.has(k))) return [];
     keys.forEach((k) => seen.add(k));
+
     return [{ ...r, reading: read }];
   }).slice(0, LONG_READS);
 }

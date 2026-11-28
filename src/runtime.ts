@@ -20,8 +20,10 @@ export async function runApp<A, E>(env: Env, effect: Effect.Effect<A, E, App>, w
   const context = await Effect.runPromise(Layer.buildWithScope(Layer.merge(Layer.succeed(Bindings)(env), layer), scope), options);
   const exit = await Effect.runPromiseExit(Effect.provideContext(effect, context), options);
   const flush = Effect.runPromise(Scope.close(scope, Exit.void), options);
+
   if (waitUntil) waitUntil(flush);
   else await flush;
+
   if (Exit.isSuccess(exit)) return exit.value;
   throw Cause.squash(exit.cause);
 }
@@ -44,12 +46,15 @@ export const bindings = Bindings;
 export function sqlSummary(sql: string): string {
   const verb = sql.trim().split(/\s+/)[0].toUpperCase();
   const tables = [...sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+(?!SET\b)([A-Za-z_][\w.]*)/gi)].map((m) => m[1]).filter((t, i, all) => all.indexOf(t) === i);
+
   return [verb, ...tables].join(" ");
 }
 
 type D1Meta = { meta?: { rows_read?: number; rows_written?: number; duration?: number } };
+
 const d1Attributes = (result: unknown): Attributes => {
   const meta = (result as D1Meta)?.meta;
+
   return { "cloudflare.d1.rows_read": meta?.rows_read, "cloudflare.d1.rows_written": meta?.rows_written, "cloudflare.d1.duration": meta?.duration };
 };
 
@@ -60,6 +65,7 @@ const d1Attributes = (result: unknown): Attributes => {
 export const d1 = <A>(sql: string, run: (db: D1Database) => Promise<A>) => {
   const batch = sql.includes("\n;\n");
   const name = batch ? "D1 batch" : sqlSummary(sql);
+
   const attributes = {
     "sentry.description": sql,
     "db.system.name": "cloudflare-d1",
@@ -67,6 +73,7 @@ export const d1 = <A>(sql: string, run: (db: D1Database) => Promise<A>) => {
     "db.query.text": sql,
     "db.query.summary": batch ? undefined : name,
   };
+
   return Effect.flatMap(bindings, (env) => call(name, "db.query", attributes, () => run(env.DB), d1Attributes));
 };
 
@@ -77,6 +84,7 @@ export const d1Batch = (query: string, rows: unknown[][]) =>
     : d1(`${query}\n;\n`, (db) => db.batch(rows.map((values) => db.prepare(query).bind(...values))));
 
 type R2Operation = "GetObject" | "PutObject" | "ListObjects" | "DeleteObject";
+
 /** The SDK's span name and op for each R2 call. */
 const R2_SPANS: Record<R2Operation, [string, string]> = {
   GetObject: ["r2_get", "object.get"],

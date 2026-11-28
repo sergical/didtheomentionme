@@ -9,6 +9,7 @@ import { join } from "node:path";
 const ACCOUNT = process.env.CF_ACCOUNT_ID ?? "";
 const TOKEN = process.env.CF_TOKEN ?? "";
 const STATE = "A frame from a YouTube video by a tech streamer: a screen recording of a web browser with a facecam overlay.";
+
 const TWEET_QUESTION =
   "Is a post from X (Twitter) clearly visible and readable as main content of the screen (a post page, timeline, search results, embed or screenshot)? Small sidebar items and avatars do not count.";
 
@@ -19,10 +20,13 @@ async function run(model: string, body: unknown): Promise<any> {
       headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+
     if (res.ok) return (await res.json()).result;
+
     if (attempt >= 4 || (res.status !== 429 && res.status < 500)) {
       return { error: `${res.status} ${(await res.text()).slice(0, 300)}` };
     }
+
     await Bun.sleep(1000 * 2 ** attempt);
   }
 }
@@ -41,7 +45,9 @@ const secondOf = (file: string) => Number.parseInt(file, 10) - 1;
 
 const [mode, dir, ...rest] = process.argv.slice(2);
 const out = rest.at(-1)!;
+
 writeFileSync(out, "");
+
 const started = Date.now();
 
 if (mode === "flash") {
@@ -53,6 +59,7 @@ if (mode === "flash") {
       images: [{ content_type: "image/jpeg", base64: b64(join(dir, file)) }],
       questions: { tweet: { type: "noul", instructions: TWEET_QUESTION } },
     });
+
     appendFileSync(out, JSON.stringify({ t: secondOf(file), p: r.answers?.tweet?.noul, tokens: r.usage?.input_tokens, error: r.error }) + "\n");
   });
 } else if (mode === "omni") {
@@ -64,12 +71,14 @@ if (mode === "flash") {
       videos: [{ content_type: "video/mp4", base64: b64(join(dir, file)) }],
       questions: { tweet: { type: "noul", instructions: `At any moment in this clip: ${TWEET_QUESTION}` } },
     });
+
     appendFileSync(out, JSON.stringify({ clip: Number.parseInt(file, 10), p: r.answers?.tweet?.noul, tokens: r.usage?.input_tokens, error: r.error }) + "\n");
   });
 } else if (mode === "clairic") {
   const seconds = rest[0].split(",").map(Number);
   await pool(seconds, 6, async (t) => {
     const file = `${String(t + 1).padStart(5, "0")}.jpg`;
+
     const r = await run("clairic", {
       model: "clairic",
       images: [{ content_type: "image/jpeg", base64: b64(join(dir, file)) }],
@@ -80,6 +89,7 @@ if (mode === "flash") {
         main_text: { type: "text", instructions: "The full text of the main X post." },
       },
     });
+
     const a = r.answers ?? {};
     appendFileSync(
       out,

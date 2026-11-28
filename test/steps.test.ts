@@ -10,6 +10,7 @@ test("each phase and the run are one span, sent once, across restarts at an even
   const sent = captureOtlp();
   const env = { SENTRY_DSN: DSN } as unknown as Env;
   const step = engine(["phase:transcribe:end"]);
+
   const run = async () => {
     const steps = await Steps.start(env, step as never, "replay-instance");
     const startMs = await steps.do("mark-processing", config, Effect.sync(() => Date.now()));
@@ -31,13 +32,16 @@ test("each phase and the run are one span, sent once, across restarts at an even
     void run();
     await settle(500);
   }
+
   await run();
   sent.restore();
 
   const byName = (name: string) => sent.spans.filter((s) => s.name === name);
+
   for (const name of ["video", "extract", "transcribe", "extract-done", "mark-processing", "extract-start", "extract-check", "transcribe-0", "transcribe-1", "mark-final"]) {
     expect(byName(name)).toHaveLength(1);
   }
+
   const [root] = byName("video");
   const [extract] = byName("extract");
   const [transcribe] = byName("transcribe");

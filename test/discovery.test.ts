@@ -4,10 +4,12 @@ import { d1, migrated } from "./d1";
 import { DSN, captureOtlp, settle } from "./harness";
 
 mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
+
 const { FEED_DOWN_MS, discoverRss } = await import("../src/videos");
 const { runApp } = await import("../src/runtime");
 
 const original = globalThis.fetch;
+
 afterEach(() => {
   globalThis.fetch = original;
 });
@@ -19,7 +21,9 @@ test("a feed whose request is rejected does not stop the next channel", async ()
   const requested: string[] = [];
   globalThis.fetch = (async (url: string) => {
     requested.push(url);
+
     if (url.includes("channel_id=down")) throw new TypeError("network connection lost");
+
     return new Response(feed);
   }) as typeof fetch;
   const db = migrated();
@@ -83,6 +87,7 @@ test("a database failure is not a feed failure, so it fails discovery at once", 
   binding.batch = async () => {
     throw new Error("D1 insert failed");
   };
+
   const source = { id: "theo", youtubeChannelIds: ["up"] } as never;
   await expect(runApp({ DB: binding } as unknown as Env, discoverRss(source))).rejects.toThrow("D1 insert failed");
   expect(db.query("SELECT * FROM feed_status").all()).toEqual([]);

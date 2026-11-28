@@ -67,6 +67,7 @@ export const renderPage = (data: PageData) =>
   Effect.gen(function* () {
     const title = shareTitle(data.source.name, data.result);
     const path = resultPath(data.input, data.source.id);
+
     const head = documentHead({
       title,
       description: `Find the exact moments ${data.source.name} showed X posts on screen, with video frames and links to each second.`,
@@ -75,6 +76,7 @@ export const renderPage = (data: PageData) =>
       image: SITE_ORIGIN + "/og.png" + path.slice(1),
       hue: data.source.hue,
     });
+
     return head + (yield* body({ kind: "lookup", ...data }));
   });
 
@@ -82,6 +84,7 @@ export const renderExplore = (data: ExploreData) =>
   Effect.gen(function* () {
     const { source, totals } = data;
     const description = `Every X post ${source.name} showed on screen in ${plural(totals.videos, "video")}, with the most shown accounts.`;
+
     const head = documentHead({
       title: `What did ${source.name} show?`,
       description,
@@ -91,5 +94,6 @@ export const renderExplore = (data: ExploreData) =>
       hue: source.hue,
       style: EXPLORE_STYLE,
     });
+
     return head + (yield* body({ kind: "explore", ...data }));
   });

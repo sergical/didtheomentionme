@@ -10,6 +10,8 @@ export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" :
 /** A stable hue for a handle or a creator id, for avatars. */
 export function hue(handle: string): number {
   let h = 0;
+
   for (const c of handle.toLowerCase()) h = (h * 31 + c.charCodeAt(0)) % 360;
+
   return h;
 }

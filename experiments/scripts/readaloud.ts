@@ -39,7 +39,9 @@ async function run(model: string, body: unknown): Promise<any> {
       headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+
     if (res.ok) return (await res.json()).result;
+
     if (attempt >= 4 || (res.status !== 429 && res.status < 500)) return { error: `${res.status} ${(await res.text()).slice(0, 300)}` };
     await Bun.sleep(1000 * 2 ** attempt);
   }
@@ -53,16 +55,20 @@ function lexical(post: string, words: [number, string][]) {
   const said = words.map(([t, w]) => [t, tokens(w)[0]] as const);
   const width = Math.max(8, want.size * 2);
   let best = { score: 0, t: 0 };
+
   for (let i = 0; i < said.length; i++) {
     const hit = new Set(said.slice(i, i + width).map(([, w]) => w).filter((w) => w && want.has(w)));
     const score = hit.size / Math.max(1, want.size);
+
     if (score > best.score) best = { score, t: said[i][0] };
   }
+
   return best;
 }
 
 const cases = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const out = process.argv[3];
+
 writeFileSync(out, "");
 
 await Promise.all(
@@ -72,13 +78,16 @@ await Promise.all(
     const words: [number, string][] = c.words;
     let state = "";
     const offsets: [number, number][] = [];
+
     for (const [t, w] of words) {
       offsets.push([state.length, t]);
       state += (state ? " " : "") + w;
     }
+
     const timeAt = (char: number) => offsets.findLast(([o]) => o <= char)?.[1];
     const postRef = `this X post by ${handle}: "${post.text}"`;
     const question = `This is a transcript of a tech streamer while ${postRef} is on screen. Does the speaker read aloud, quote or paraphrase that post's content?`;
+
     const [clairic, flash, clef] = await Promise.all([
       run("clairic", {
         model: "clairic",
@@ -88,6 +97,7 @@ await Promise.all(
       run("clef-flash", { model: "clef-flash", state, questions: { read: { type: "noul", instructions: question } } }),
       run("clef", { model: "clef", state, questions: { read: { type: "noul", instructions: question } } }),
     ]);
+
     const q = clairic.answers?.quote ?? {};
     appendFileSync(
       out,
@@ -101,4 +111,5 @@ await Promise.all(
     );
   }),
 );
+
 console.log("done");

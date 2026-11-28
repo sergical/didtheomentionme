@@ -30,11 +30,13 @@ export class Steps {
   /** One step. Its Effect span has the phase as its parent, which a Worker restart keeps. */
   do<A>(name: string, config: WorkflowStepConfig, body: Effect.Effect<A, unknown, App>, attributes: Attributes = {}): Promise<A> {
     const parent = Tracer.externalSpan(this.parent);
+
     const callback = (ctx: WorkflowStepContext) =>
       runApp(this.env, body.pipe(
         span(name, "function", { "workflow.step.name": name, "cloudflare.workflow.attempt": ctx.attempt, ...attributes }),
         Effect.withParentSpan(parent),
       ));
+
     return this.step.do(name, config, callback as never) as Promise<A>;
   }
 
@@ -42,14 +44,17 @@ export class Steps {
   async phase<A>(name: string, fn: (steps: Steps) => Promise<A>, attributes: Attributes = {}, op = "workflow.phase"): Promise<A> {
     const key = `phase:${[name, ...Object.values(attributes)].join(":")}`;
     const { spanId, startMs } = await this.step.do(key, {}, async () => ({ spanId: randomSpanId(), startMs: Date.now() }));
+
     const end = (failed: boolean) =>
       this.step.do(`${key}:end`, {}, () =>
         runApp(this.env, Effect.flatMap(Telemetry, (telemetry) =>
           telemetry.recordSpan({ ...this.parent, parentSpanId: this.parent.spanId, spanId, name, op, startMs, endMs: Date.now(), failed, attributes }),
         )));
+
     try {
       const result = await fn(this.under({ traceId: this.parent.traceId, spanId }));
       await end(false);
+
       return result;
     } catch (err) {
       await end(true);

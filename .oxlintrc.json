@@ -44,6 +44,7 @@
     "anti-slop-effect/no-manual-tagged-construction": "error",
     "anti-slop-effect/no-service-constructor-imports": "error",
     "anti-slop-effect/prefer-effect-match": "error",
+    "typescript/consistent-type-imports": ["error", { "disallowTypeAnnotations": true }],
     "complexity": ["error", { "max": 10 }],
     "max-depth": ["error", { "max": 4 }],
     "max-nested-callbacks": ["error", { "max": 3 }],

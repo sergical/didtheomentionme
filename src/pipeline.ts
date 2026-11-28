@@ -469,7 +469,7 @@ interface WhisperSegment {
   start: number;
   end: number;
   text: string;
-  words?: readonly { word: string; start: number; end: number }[];
+  words?: readonly { word: string; start: number; end?: number }[];
 }
 
 /** Word timings from a Whisper result; segments without word data get evenly spread words. */

@@ -116,18 +116,20 @@ export function toBase64(bytes: ArrayBuffer): string {
   return btoa(binary);
 }
 
-const decodeAnswers = Schema.decodeUnknownOption(Schema.Struct({ answers: Schema.Record(Schema.String, Schema.Struct({ noul: Schema.Number })) }));
+const Answers = Schema.Record(Schema.String, Schema.Struct({ type: Schema.optional(Schema.String), noul: Schema.Number }));
+const decodeAnswers = Schema.decodeUnknownOption(Schema.Struct({ answers: Answers }));
 
 /** The yes-or-no answers of clef or clef-flash by question name, or null when the result has none. */
 const answersOf = (result: Json) => Option.getOrNull(Option.map(decodeAnswers(result), (decoded) => decoded.answers));
 
-/** The probability of each named question, in the order of `names`. Fails when the model answered none of them. */
-const probabilities = (label: string, result: Json, names: string[]) => {
-  const answers = answersOf(result) ?? {};
-  const found = names.flatMap((name) => (name in answers ? [answers[name].noul] : []));
+/** The probability of each named question, in the order of `names`, or null when any of them has no answer. */
+const probabilities = (answers: typeof Answers.Type | null, names: string[]) => {
+  const found = names.flatMap((name) => (answers && name in answers ? [answers[name].noul] : []));
 
-  return found.length === names.length ? Effect.succeed(found) : Effect.fail(new Error(`${label} returned no answer: ${JSON.stringify(result).slice(0, 200)}`));
+  return found.length === names.length ? found : null;
 };
+
+const noAnswer = (label: string, result: Json) => new Error(`${label} returned no answer: ${JSON.stringify(result).slice(0, 200)}`);
 
 /** One yes-or-no question about a frame, under the name its answer comes back with. */
 interface FrameQuestion {
@@ -142,9 +144,11 @@ function askAboutFrame(state: string, questions: FrameQuestion[], jpeg: ArrayBuf
   return Effect.gen(function* () {
     const result = yield* runModel(FLASH, { model: "clef-flash", state, images: [{ content_type: "image/jpeg", base64: toBase64(jpeg) }], questions: asked });
     yield* recordUsage(FLASH, result);
-    yield* annotate({ "gen_ai.output.messages": JSON.stringify(answersOf(result)) });
+    const answers = answersOf(result);
+    yield* annotate({ "gen_ai.output.messages": JSON.stringify(answers) });
+    const found = probabilities(answers, questions.map((question) => question.name));
 
-    return yield* probabilities("clef-flash", result, questions.map((question) => question.name));
+    return found ?? (yield* Effect.fail(noAnswer("clef-flash", result)));
   }).pipe(modelSpan(FLASH, { ...frameAttributes(frame), "gen_ai.input.messages": JSON.stringify([{ role: "user", state, questions: asked }]) }));
 }
 
@@ -209,10 +213,13 @@ export const readAloudProbability = (detector: Detector, post: Post, transcript:
   return Effect.gen(function* () {
     const result = yield* runModel(CLEF, { model: "clef", state: transcript, questions });
     yield* recordUsage(CLEF, result);
-    const [read] = yield* probabilities("clef", result, ["read"]);
-    yield* annotate({ "gen_ai.output.messages": JSON.stringify(answersOf(result)) });
+    const answers = answersOf(result);
+    const found = probabilities(answers, ["read"]);
 
-    return read;
+    if (!found) return yield* Effect.fail(noAnswer("clef", result));
+    yield* annotate({ "gen_ai.output.messages": JSON.stringify(answers) });
+
+    return found[0];
   }).pipe(modelSpan(CLEF, { "app.task": "read-aloud check", "gen_ai.input.messages": JSON.stringify([{ role: "user", state: transcript, questions }]) }));
 };
 
@@ -250,12 +257,14 @@ export const findQuote = (detector: Detector, post: Post, transcript: string): E
 };
 
 const decodeTranscript = Schema.decodeUnknownOption(Schema.Struct({
+  /** Whisper always answers with the whole text, which is empty for a silent chunk. An answer without it is not a transcript. */
+  text: Schema.String,
   transcription_info: Schema.optional(Schema.Struct({ duration: Schema.optional(Schema.Number) })),
   segments: Schema.optional(Schema.Array(Schema.Struct({
     start: Schema.Number,
     end: Schema.Number,
     text: Schema.String,
-    words: Schema.optional(Schema.Array(Schema.Struct({ word: Schema.String, start: Schema.Number, end: Schema.Number }))),
+    words: Schema.optional(Schema.Array(Schema.Struct({ word: Schema.String, start: Schema.Number, end: Schema.optional(Schema.Number) }))),
   }))),
 }));
 

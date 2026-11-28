@@ -58,6 +58,7 @@ export default Alchemy.Stack(
     const client = yield* Effect.promise(buildClient);
     // The stage Alchemy resolved, from --stage or ALCHEMY_STAGE, so the names always match it.
     const worker = yield* resources(yield* Alchemy.Stage, client.build);
+
     return { url: worker.url };
   }),
 );

@@ -1,11 +1,9 @@
-import { Effect, Fiber, Option } from "effect";
+import { Effect, Fiber, Option, Result, Schema } from "effect";
 import type { Detector, Post } from "./config";
+import type { Json, ModelInputs } from "./env";
 import { parseReaderLines, quoteSpan, wordRunSpan, wordsFromSegments, type ReaderLine, type Word } from "./pipeline";
 import { Bindings, annotate, span } from "./runtime";
 import { OPERATIONS, WHISPER, errorMessage, frameAttributes, redactImages, usageAttributes, whisperCostAttributes, type Attributes, type FrameReference } from "./telemetry";
-
-// The AI binding types in workers-types do not list these models.
-type AnyRun = { run(model: string, inputs: unknown): Promise<any> };
 
 const FLASH = "@cf/cloudflare/clef-flash";
 const CLEF = "@cf/cloudflare/clef";
@@ -20,9 +18,9 @@ const READ_HEDGE_MS = 20_000;
  * The wait before the next attempt, or null when a retry cannot help. Error 3021 is the per-minute limit on
  * inference requests, so it waits for the minute to move on, not for a second.
  */
-export function retryDelayMs(err: unknown, attempt: number): number | null {
-  const status = (err as { status?: number })?.status;
-  const message = errorMessage(err);
+export function retryDelayMs(cause: unknown, attempt: number): number | null {
+  const status = Option.getOrUndefined(decodeStatus(cause))?.status;
+  const message = errorMessage(cause);
   const rateLimited = status === 429 || /\b(429|3021)\b|rate limit/i.test(message);
   const retryable = status !== undefined ? rateLimited || status >= 500 : rateLimited || /\b5\d\d\b|capacity|overloaded|timed? ?out|temporar|internal/i.test(message);
 
@@ -31,15 +29,17 @@ export function retryDelayMs(err: unknown, attempt: number): number | null {
   return (rateLimited ? 10_000 : 1000) * 2 ** attempt + Math.random() * 500;
 }
 
+const decodeStatus = Schema.decodeUnknownOption(Schema.Struct({ status: Schema.Number }));
+
 /** One binding call, retried while a retry can help. An interrupted call, for example a hedge's loser, stops retrying. */
-export const runModel = (model: string, inputs: unknown, attempts = 3): Effect.Effect<any, unknown, Bindings> =>
+export const runModel = (model: string, inputs: ModelInputs, attempts = 3): Effect.Effect<Json, unknown, Bindings> =>
   Effect.gen(function* () {
     const env = yield* Bindings;
 
     for (let attempt = 0; ; attempt++) {
-      const result = yield* Effect.result(Effect.tryPromise({ try: () => (env.AI as unknown as AnyRun).run(model, inputs), catch: (err) => err }));
+      const result = yield* Effect.result(Effect.tryPromise({ try: () => env.AI.run(model, inputs), catch: (cause) => cause }));
 
-      if (result._tag === "Success") {
+      if (Result.isSuccess(result)) {
         if (attempt) yield* annotate({ "app.retries": attempt });
 
         return result.success;
@@ -68,17 +68,24 @@ export const modelSpan = (model: string, attributes: Attributes) =>
     ...attributes,
   });
 
-/** Usage from the answer, or an estimate of 4 characters per token when the model reports none. */
-const recordUsage = (model: string, result: any, estimate?: number) => {
-  const input = result?.usage?.prompt_tokens ?? result?.usage?.input_tokens;
-  const output = result?.usage?.completion_tokens ?? result?.usage?.output_tokens ?? 0;
+const Tokens = Schema.optional(Schema.Number);
+const decodeUsage = Schema.decodeUnknownOption(Schema.Struct({ usage: Schema.Struct({ prompt_tokens: Tokens, input_tokens: Tokens, completion_tokens: Tokens, output_tokens: Tokens }) }));
 
-  if (typeof input === "number") return annotate(usageAttributes(model, input, output));
+/** The tokens a model reports, under either pair of names the models use. */
+const tokensOf = (result: Json) => {
+  const usage = Option.getOrUndefined(decodeUsage(result))?.usage;
+
+  return { input: usage?.prompt_tokens ?? usage?.input_tokens, output: usage?.completion_tokens ?? usage?.output_tokens ?? 0 };
+};
+
+/** Usage from the answer, or an estimate of 4 characters per token when the model reports none. */
+const recordUsage = (model: string, result: Json, estimate?: number) => {
+  const { input, output } = tokensOf(result);
+
+  if (input !== undefined) return annotate(usageAttributes(model, input, output));
 
   return estimate === undefined ? Effect.void : annotate(usageAttributes(model, estimate, 0, true));
 };
-
-const json = (value: unknown) => JSON.stringify(value);
 
 /**
  * Starts a second call when the first has not answered after `delayMs`, and returns the first answer. Workers AI
@@ -109,51 +116,74 @@ export function toBase64(bytes: ArrayBuffer): string {
   return btoa(binary);
 }
 
-function askAboutFrame<Q extends string>(state: string, questions: Record<Q, string>, jpeg: ArrayBuffer, frame: FrameReference) {
-  const names = Object.keys(questions) as Q[];
-  const asked = Object.fromEntries(names.map((name) => [name, { type: "noul", instructions: questions[name] }]));
+const decodeAnswers = Schema.decodeUnknownOption(Schema.Struct({ answers: Schema.Record(Schema.String, Schema.Struct({ noul: Schema.Number })) }));
+
+/** The yes-or-no answers of clef or clef-flash by question name, or null when the result has none. */
+const answersOf = (result: Json) => Option.getOrNull(Option.map(decodeAnswers(result), (decoded) => decoded.answers));
+
+/** The probability of each named question, in the order of `names`. Fails when the model answered none of them. */
+const probabilities = (label: string, result: Json, names: string[]) => {
+  const answers = answersOf(result) ?? {};
+  const found = names.flatMap((name) => (name in answers ? [answers[name].noul] : []));
+
+  return found.length === names.length ? Effect.succeed(found) : Effect.fail(new Error(`${label} returned no answer: ${JSON.stringify(result).slice(0, 200)}`));
+};
+
+/** One yes-or-no question about a frame, under the name its answer comes back with. */
+interface FrameQuestion {
+  name: string;
+  instructions: string;
+}
+
+/** Asks clef-flash about one frame, and gives the probability of each question in the order asked. */
+function askAboutFrame(state: string, questions: FrameQuestion[], jpeg: ArrayBuffer, frame: FrameReference) {
+  const asked = Object.fromEntries(questions.map(({ name, instructions }) => [name, { type: "noul", instructions }]));
 
   return Effect.gen(function* () {
     const result = yield* runModel(FLASH, { model: "clef-flash", state, images: [{ content_type: "image/jpeg", base64: toBase64(jpeg) }], questions: asked });
     yield* recordUsage(FLASH, result);
-    yield* annotate({ "gen_ai.output.messages": json(result?.answers ?? null) });
+    yield* annotate({ "gen_ai.output.messages": JSON.stringify(answersOf(result)) });
 
-    return Object.fromEntries(names.map((name) => {
-      const p = result?.answers?.[name]?.noul;
-
-      if (typeof p !== "number") throw new Error(`clef-flash returned no answer: ${json(result).slice(0, 200)}`);
-
-      return [name, p];
-    })) as Record<Q, number>;
-  }).pipe(modelSpan(FLASH, { ...frameAttributes(frame), "gen_ai.input.messages": json([{ role: "user", state, questions: asked }]) }));
+    return yield* probabilities("clef-flash", result, questions.map((question) => question.name));
+  }).pipe(modelSpan(FLASH, { ...frameAttributes(frame), "gen_ai.input.messages": JSON.stringify([{ role: "user", state, questions: asked }]) }));
 }
 
 /** Probability that an X post (or whatever the detector looks for) is on screen. */
 export const detectFrame = (detector: Detector, jpeg: ArrayBuffer, frame: FrameReference) =>
-  Effect.map(askAboutFrame(detector.frameState, { frame: detector.frameQuestion }, jpeg, frame), (answers) => answers.frame);
+  Effect.map(askAboutFrame(detector.frameState, [{ name: "frame", instructions: detector.frameQuestion }], jpeg, frame), ([onScreen]) => onScreen);
+
+const Text = Schema.optional(Schema.NullOr(Schema.String));
+
+const decodeChat = Schema.decodeUnknownOption(Schema.Struct({
+  choices: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Text })), finish_reason: Text }))),
+  response: Text,
+}));
 
 function askReader(prompt: string, maxTokens: number, jpeg: ArrayBuffer, frame: FrameReference) {
-  const messages = [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:image/jpeg;base64,${toBase64(jpeg)}` } }] }];
+  const text = { type: "text", text: prompt };
+  const image = { type: "image_url", image_url: { url: `data:image/jpeg;base64,${toBase64(jpeg)}` } };
+  const messages = [{ role: "user", content: [text, image] }];
   const inputs = { max_tokens: maxTokens, temperature: 0, chat_template_kwargs: { enable_thinking: false }, messages };
   const attributes = frameAttributes(frame);
 
   return Effect.gen(function* () {
     const result = yield* hedge(READER, READ_HEDGE_MS, runModel(READER, inputs));
     yield* recordUsage(READER, result);
-    const choice = result?.choices?.[0];
-    const text = choice?.message?.content ?? result?.response;
+    const chat = Option.getOrUndefined(decodeChat(result));
+    const choice = chat?.choices?.[0];
+    const answer = choice?.message?.content ?? chat?.response ?? null;
 
-    if (typeof text !== "string") return yield* Effect.fail(new Error(`${READER} returned no text: ${json(result).slice(0, 200)}`));
-    yield* annotate({ "gen_ai.output.messages": json([{ role: "assistant", parts: [{ type: "text", content: text }], finish_reason: choice?.finish_reason }]) });
+    if (answer === null) return yield* Effect.fail(new Error(`${READER} returned no text: ${JSON.stringify(result).slice(0, 200)}`));
+    yield* annotate({ "gen_ai.output.messages": JSON.stringify([{ role: "assistant", parts: [{ type: "text", content: answer }], finish_reason: choice?.finish_reason }]) });
 
-    return text;
-  }).pipe(modelSpan(READER, { ...attributes, "gen_ai.request.max_tokens": maxTokens, "gen_ai.input.messages": redactImages(json(messages), attributes["app.frame.url"]) }));
+    return answer;
+  }).pipe(modelSpan(READER, { ...attributes, "gen_ai.request.max_tokens": maxTokens, "gen_ai.input.messages": redactImages(JSON.stringify(messages), attributes["app.frame.url"]) }));
 }
 
 /** The reader lists stream chat and other sites as X posts, so the full-size frame is checked first and the source is asked apart. */
 export const readPosts = (detector: Detector, jpeg: ArrayBuffer, frame: FrameReference): Effect.Effect<ReaderLine[], unknown, Bindings> =>
   Effect.gen(function* () {
-    const { page, chat } = yield* askAboutFrame(detector.frameState, { page: detector.frameQuestion, chat: detector.chatQuestion }, jpeg, frame);
+    const [page, chat] = yield* askAboutFrame(detector.frameState, [{ name: "page", instructions: detector.frameQuestion }, { name: "chat", instructions: detector.chatQuestion }], jpeg, frame);
     const skip = page < detector.pageThreshold ? "not_x" : chat >= detector.chatThreshold ? "chat" : null;
 
     if (skip) {
@@ -179,13 +209,11 @@ export const readAloudProbability = (detector: Detector, post: Post, transcript:
   return Effect.gen(function* () {
     const result = yield* runModel(CLEF, { model: "clef", state: transcript, questions });
     yield* recordUsage(CLEF, result);
-    const p = result?.answers?.read?.noul;
+    const [read] = yield* probabilities("clef", result, ["read"]);
+    yield* annotate({ "gen_ai.output.messages": JSON.stringify(answersOf(result)) });
 
-    if (typeof p !== "number") return yield* Effect.fail(new Error(`clef returned no answer: ${json(result).slice(0, 200)}`));
-    yield* annotate({ "gen_ai.output.messages": json(result.answers) });
-
-    return p as number;
-  }).pipe(modelSpan(CLEF, { "app.task": "read-aloud check", "gen_ai.input.messages": json([{ role: "user", state: transcript, questions }]) }));
+    return read;
+  }).pipe(modelSpan(CLEF, { "app.task": "read-aloud check", "gen_ai.input.messages": JSON.stringify([{ role: "user", state: transcript, questions }]) }));
 };
 
 /** `question` and `answer` are what Clairic was asked and said, which a trace needs when the app does not use the answer. */
@@ -195,6 +223,8 @@ export type QuoteSearch = {
   span: [number, number] | null;
   how: "read" | "word_run" | "own_words" | null;
 };
+
+const decodeQuote = Schema.decodeUnknownOption(Schema.Struct({ answers: Schema.Struct({ quote: Schema.Struct({ span: Schema.Tuple([Schema.Number, Schema.Number]) }) }) }));
 
 /**
  * Where in the transcript the speaker says the post. Asked for a word-for-word reading of a post the speaker puts in
@@ -209,24 +239,36 @@ export const findQuote = (detector: Detector, post: Post, transcript: string): E
   return Effect.gen(function* () {
     const result = yield* runModel(CLAIRIC, { model: "clairic", state: transcript, fields });
     yield* recordUsage(CLAIRIC, result);
-    const raw = result?.answers?.quote?.span;
-    const answer = Array.isArray(raw) ? transcript.slice(raw[0], raw[1]) : null;
-    yield* annotate({ "gen_ai.output.messages": json([{ role: "assistant", parts: [{ type: "text", content: answer }] }]) });
-    const span = quoteSpan(raw, transcript);
+    const raw = Option.getOrNull(Option.map(decodeQuote(result), (decoded) => decoded.answers.quote.span));
+    const answer = raw ? transcript.slice(raw[0], raw[1]) : null;
+    yield* annotate({ "gen_ai.output.messages": JSON.stringify([{ role: "assistant", parts: [{ type: "text", content: answer }] }]) });
+    const span = raw && quoteSpan(raw, transcript);
+    const found: QuoteSearch = span ? { question, answer, span, how: run ? "read" : "own_words" } : { question, answer, span: run, how: run ? "word_run" : null };
 
-    if (span) return { question, answer, span, how: run ? "read" : "own_words" } as const;
-
-    return { question, answer, span: run, how: run && "word_run" } as QuoteSearch;
-  }).pipe(modelSpan(CLAIRIC, { "app.task": "quote finder", "gen_ai.input.messages": json([{ role: "user", state: transcript, fields }]) }));
+    return found;
+  }).pipe(modelSpan(CLAIRIC, { "app.task": "quote finder", "gen_ai.input.messages": JSON.stringify([{ role: "user", state: transcript, fields }]) }));
 };
+
+const decodeTranscript = Schema.decodeUnknownOption(Schema.Struct({
+  transcription_info: Schema.optional(Schema.Struct({ duration: Schema.optional(Schema.Number) })),
+  segments: Schema.optional(Schema.Array(Schema.Struct({
+    start: Schema.Number,
+    end: Schema.Number,
+    text: Schema.String,
+    words: Schema.optional(Schema.Array(Schema.Struct({ word: Schema.String, start: Schema.Number, end: Schema.Number }))),
+  }))),
+}));
 
 /** Word timings for one audio chunk; `offsetSeconds` is the chunk start in the video. Whisper is priced by audio minute. */
 export const transcribe = (mp3: ArrayBuffer, offsetSeconds: number): Effect.Effect<Word[], unknown, Bindings> =>
   Effect.gen(function* () {
     const result = yield* runModel(WHISPER, { audio: toBase64(mp3) });
-    yield* annotate(whisperCostAttributes(result?.transcription_info?.duration ?? 0));
+    const transcript = Option.getOrNull(decodeTranscript(result));
 
-    return wordsFromSegments(result?.segments ?? [], offsetSeconds);
+    if (!transcript) return yield* Effect.fail(new Error(`${WHISPER} returned no transcript: ${JSON.stringify(result).slice(0, 200)}`));
+    yield* annotate(whisperCostAttributes(transcript.transcription_info?.duration ?? 0));
+
+    return wordsFromSegments(transcript.segments ?? [], offsetSeconds);
   }).pipe(modelSpan(WHISPER, { "app.audio_offset": offsetSeconds, "gen_ai.input.messages": `[audio/mpeg, ${Math.round(mp3.byteLength / 1024)} KB]` }));
 
 /** bge-m3 pads each text to the longest one in its request, and counts the padded tokens against this limit. */
@@ -259,6 +301,8 @@ export function embedRequests(texts: string[]): string[][] {
   return requests;
 }
 
+const decodeVectors = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.mutable(Schema.Array(Schema.mutable(Schema.Array(Schema.Number)))) }));
+
 /** Error 8007 means the request was over the token limit, because other scripts and repeated symbols beat the estimate. */
 const embedRequest = (request: string[]): Effect.Effect<number[][], unknown, Bindings> =>
   Effect.gen(function* () {
@@ -270,18 +314,18 @@ const embedRequest = (request: string[]): Effect.Effect<number[][], unknown, Bin
       modelSpan(EMBED, { "gen_ai.input.messages": `[${request.length} texts]` }),
     ));
 
-    if (result._tag === "Failure") {
+    if (Result.isFailure(result)) {
       if (request.length === 1 || !/\b8007\b/.test(errorMessage(result.failure))) return yield* Effect.fail(result.failure);
       const half = request.length >> 1;
 
       return [...(yield* embedRequest(request.slice(0, half))), ...(yield* embedRequest(request.slice(half)))];
     }
 
-    const data = result.success?.data;
+    const data = Option.getOrUndefined(decodeVectors(result.success))?.data;
 
-    if (!Array.isArray(data) || data.length !== request.length) return yield* Effect.fail(new Error(`bge-m3 returned ${data?.length} vectors for ${request.length} texts`));
+    if (!data || data.length !== request.length) return yield* Effect.fail(new Error(`bge-m3 returned ${data?.length} vectors for ${request.length} texts`));
 
-    return data as number[][];
+    return data;
   });
 
 export const embed = (texts: string[]) =>

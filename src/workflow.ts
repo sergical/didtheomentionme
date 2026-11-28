@@ -24,11 +24,12 @@ import {
   UNKNOWN_HANDLE,
   withCanonicalHandle,
 } from "./pipeline";
-import { EXTRACT_EVENT, JOB_PROTOCOL, UPLOAD_HOST } from "./container";
+import { EXTRACT_EVENT } from "./container";
+import { audioChunkCount, checkJob, startJob, type JobStatus, type Manifest } from "./job";
 import { annotate, d1, r2, span, sql, vectorize, type App } from "./runtime";
 import { Steps } from "./steps";
 import { Telemetry, errorMessage, frameAttributes } from "./telemetry";
-import { containerFetch, destroyContainer, endRun, isoOrNull, setStatus, startRun, watchContainerJob } from "./videos";
+import { destroyContainer, endRun, isoOrNull, setStatus, startRun } from "./videos";
 
 const DETECT_BATCH = 120;
 const DETECT_CONCURRENCY = 10;
@@ -55,28 +56,6 @@ const IO_STEP = { retries: { limit: 3, delay: "5 seconds", backoff: "exponential
 /** Waits out "Maximum number of running container instances exceeded" while other videos finish, and a container rollout. */
 const START_STEP = { retries: { limit: 8, delay: "30 seconds", backoff: "linear" }, timeout: "5 minutes" } as const;
 const AI_STEP = { retries: { limit: 5, delay: "10 seconds", backoff: "exponential" }, timeout: "15 minutes" } as const;
-
-type Manifest = {
-  videoId: string;
-  title: string | null;
-  duration: number | null;
-  publishedAt: string | null;
-  frames: number;
-  keptSeconds?: number[];
-  hasCaptions: boolean;
-  captionsError?: string | null;
-  audioChunks: number | string[];
-};
-
-type JobStatus = {
-  state: "running" | "done" | "error" | "stopped";
-  stage: string | null;
-  restarted?: boolean;
-  uploaded?: number;
-  total?: number;
-  error: string | null;
-  manifest: Manifest | null;
-};
 
 type Mention = PostGroup & {
   detector: string;
@@ -138,9 +117,10 @@ export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
     if (!config) throw new NonRetryableError(`unknown source ${sourceId}`);
     const detectors = config.detectors.map(getDetector);
 
-    const manifest = await steps.phase("extract", (steps) => this.extract(videoId, instanceId, steps));
+    const extracted = await steps.phase("extract", (steps) => this.extract(videoId, instanceId, steps));
 
-    if (typeof manifest === "string") return { outcome: manifest, facts: {} };
+    if (extracted.outcome !== "ready") return { outcome: extracted.outcome, facts: {} };
+    const { manifest } = extracted;
 
     const isShort = manifest.duration != null && manifest.duration < MIN_DURATION_SECONDS;
     const mentions: Mention[] = [];
@@ -157,7 +137,7 @@ export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
     if (!isShort) {
       for (const detector of detectors) {
         const attributes = { "app.detector": detector.id };
-        const probs = await steps.phase("detect", (steps) => this.detect(videoId, detector, manifest, timeline, steps), attributes);
+        const probs = await steps.phase("detect", (steps) => this.detect({ videoId, manifest, timeline }, detector, steps), attributes);
         await steps.phase("read", async (steps) => {
           const runs = findRuns(probs, detector.frameThreshold);
           const found: Mention[][] = runs.map(() => []);
@@ -195,12 +175,25 @@ export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
     };
   }
 
-  private async extract(videoId: string, instanceId: string, steps: Steps): Promise<Manifest | "not_ready" | "skipped"> {
-    const token = this.env.INTERNAL_TOKEN;
-    await steps.do("extract-start", START_STEP, startJob(videoId, instanceId, token));
+  private async extract(videoId: string, instanceId: string, steps: Steps): Promise<Extracted> {
+    await steps.do("extract-start", START_STEP, startJob(videoId, instanceId, this.env.INTERNAL_TOKEN));
+    const { job, waits } = await this.finishedJob(videoId, instanceId, steps);
+    await steps.do("extract-release", IO_STEP, destroyContainer(videoId));
 
-    // Only a timeout or a restart uses up a wait. A stop event from a container that is gone, with the job
-    // still running, does not.
+    if (job.state === "error") return failedExtract(job);
+    const { manifest } = job;
+
+    if (!manifest) throw new NonRetryableError("extract finished without a manifest");
+    await steps.do("save-metadata", IO_STEP, saveMetadata(videoId, manifest, waits));
+
+    return { outcome: "ready", manifest };
+  }
+
+  /**
+   * Waits until the job is done or has failed. Only a timeout or a restart uses up a wait. A stop event from a
+   * container that is gone, with the job still running, does not.
+   */
+  private async finishedJob(videoId: string, instanceId: string, steps: Steps): Promise<{ job: JobStatus; waits: number }> {
     for (let wait = 0, used = 0; used < MAX_EXTRACT_WAITS; wait++) {
       // Step names must differ, but only a job that outlives its first wait needs a number.
       const retry = wait ? `-${wait}` : "";
@@ -211,42 +204,12 @@ export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
       let job = event;
 
       if (!job || job.state === "stopped") {
-        job = await steps.do(`extract-check${retry}`, START_STEP, checkJob(videoId, instanceId, token));
+        job = await steps.do(`extract-check${retry}`, START_STEP, checkJob(videoId, instanceId, this.env.INTERNAL_TOKEN));
 
         if (!event || job.restarted) used++;
       }
 
-      if (job.state === "running") continue;
-      await steps.do("extract-release", IO_STEP, destroyContainer(videoId));
-
-      if (job.state === "error") {
-        if (job.error === "not_ready") return "not_ready";
-
-        if (job.error === "members_only") return "skipped";
-        throw new NonRetryableError(`extract failed at ${job.stage}: ${job.error}`);
-      }
-
-      const { manifest } = job;
-
-      if (!manifest) throw new NonRetryableError("extract finished without a manifest");
-      await steps.do("save-metadata", IO_STEP, Effect.gen(function* () {
-        yield* sql.run(
-          `UPDATE videos SET title = COALESCE(title, ?), duration = COALESCE(?, duration),
-           published_at = COALESCE(published_at, ?) WHERE id = ?`,
-          manifest.title, manifest.duration, isoOrNull(manifest.publishedAt), videoId,
-        );
-        yield* Effect.logInfo(`Extracted ${manifest.frames} frames from ${manifest.duration ?? "?"} s of video, captions: ${manifest.hasCaptions}`).pipe(
-          Effect.annotateLogs({ "video.id": videoId, "extract.waits": wait + 1 }),
-        );
-
-        if (manifest.captionsError) {
-          yield* Effect.logWarning(`No captions for ${videoId}, using whisper: ${manifest.captionsError}`).pipe(Effect.annotateLogs({ "video.id": videoId }));
-        }
-
-        yield* annotate({ "video.duration": manifest.duration ?? undefined, "video.frames": manifest.frames, "extract.waits": wait + 1 });
-      }));
-
-      return manifest;
+      if (job.state !== "running") return { job, waits: wait + 1 };
     }
 
     throw new NonRetryableError(`extract did not finish after ${MAX_EXTRACT_WAITS} timeouts or restarts`);
@@ -283,26 +246,67 @@ export class VideoPipeline extends WorkflowEntrypoint<Env, VideoParams> {
     }));
   }
 
-  private async detect(videoId: string, detector: Detector, manifest: Manifest, timeline: number[], steps: Steps): Promise<number[]> {
+  private async detect({ videoId, manifest, timeline }: VideoFrames, detector: Detector, steps: Steps): Promise<number[]> {
     const kept = frameSeconds(manifest.frames, manifest.keptSeconds);
     const batches = Array.from({ length: Math.ceil(kept.length / DETECT_BATCH) }, (_, b) => kept.slice(b * DETECT_BATCH, (b + 1) * DETECT_BATCH));
-    const probs: number[][] = new Array(batches.length);
+    const probs: number[][] = batches.map(() => []);
     await pool(batches, DETECT_STEPS, async (seconds, b) => {
-      probs[b] = await steps.do(`detect-${detector.id}-${b * DETECT_BATCH}`, AI_STEP, Effect.forEach(seconds, (second) =>
-        Effect.gen(function* () {
-          const frameKey = key(videoId, `f640/${second}.jpg`);
-          const frame = yield* r2("GetObject", frameKey, (bucket) => bucket.get(frameKey));
-
-          if (!frame) return yield* Effect.fail(new Error(`missing detection frame ${second}`));
-          const p = yield* detectFrame(detector, yield* Effect.promise(() => frame.arrayBuffer()), { videoId, second, size: "f640" });
-
-          return Math.round(p * 1000) / 1000;
-        }), { concurrency: DETECT_CONCURRENCY }), { "app.frames": seconds.length });
+      probs[b] = await steps.do(`detect-${detector.id}-${b * DETECT_BATCH}`, AI_STEP, detectBatch(videoId, detector, seconds), { "app.frames": seconds.length });
     });
 
     return inheritProbabilities(timeline, kept, probs.flat());
   }
 }
+
+/** The frames of one video: what the container made of it, and the stored frame that each second shows. */
+interface VideoFrames {
+  videoId: string;
+  manifest: Manifest;
+  timeline: number[];
+}
+
+/** How the extract of a video ended: with its frames, or with the reason there are none. */
+type Extracted = { outcome: "ready"; manifest: Manifest } | { outcome: "not_ready" | "skipped" };
+
+function failedExtract(job: JobStatus): Extracted {
+  if (job.error === "not_ready") return { outcome: "not_ready" };
+
+  if (job.error === "members_only") return { outcome: "skipped" };
+  throw new NonRetryableError(`extract failed at ${job.stage}: ${job.error}`);
+}
+
+const saveMetadata = (videoId: string, manifest: Manifest, waits: number) =>
+  Effect.gen(function* () {
+    yield* sql.run(
+      `UPDATE videos SET title = COALESCE(title, ?), duration = COALESCE(?, duration),
+           published_at = COALESCE(published_at, ?) WHERE id = ?`,
+      manifest.title, manifest.duration, isoOrNull(manifest.publishedAt), videoId,
+    );
+    yield* Effect.logInfo(`Extracted ${manifest.frames} frames from ${manifest.duration ?? "?"} s of video, captions: ${manifest.hasCaptions}`).pipe(
+      Effect.annotateLogs({ "video.id": videoId, "extract.waits": waits }),
+    );
+
+    if (manifest.captionsError) {
+      yield* Effect.logWarning(`No captions for ${videoId}, using whisper: ${manifest.captionsError}`).pipe(Effect.annotateLogs({ "video.id": videoId }));
+    }
+
+    yield* annotate({ "video.duration": manifest.duration ?? undefined, "video.frames": manifest.frames, "extract.waits": waits });
+  });
+
+/** The probability that one stored frame shows what the detector looks for. */
+const detectSecond = (videoId: string, detector: Detector, second: number) =>
+  Effect.gen(function* () {
+    const frameKey = key(videoId, `f640/${second}.jpg`);
+    const frame = yield* r2("GetObject", frameKey, (bucket) => bucket.get(frameKey));
+
+    if (!frame) return yield* Effect.fail(new Error(`missing detection frame ${second}`));
+    const p = yield* detectFrame(detector, yield* Effect.promise(() => frame.arrayBuffer()), { videoId, second, size: "f640" });
+
+    return Math.round(p * 1000) / 1000;
+  });
+
+const detectBatch = (videoId: string, detector: Detector, seconds: number[]) =>
+  Effect.forEach(seconds, (second) => detectSecond(videoId, detector, second), { concurrency: DETECT_CONCURRENCY });
 
 /** Runs `fn` on every item, at most `size` at a time. Each call is a durable step, so this stays plain async. */
 async function pool<T>(items: T[], size: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
@@ -315,64 +319,22 @@ async function pool<T>(items: T[], size: number, fn: (item: T, index: number) =>
   }));
 }
 
-const startJob = (videoId: string, instanceId: string, token: string) =>
+/** The posts the reader finds on one stored frame. */
+const readFrame = (videoId: string, detector: Detector, second: number) =>
   Effect.gen(function* () {
-    // Before the POST, so a container that stops as soon as the job starts still reports it.
-    yield* watchContainerJob(videoId, instanceId);
+    const frameKey = key(videoId, `f1920/${second}.jpg`);
+    const frame = yield* r2("GetObject", frameKey, (bucket) => bucket.get(frameKey));
 
-    const res = yield* containerFetch(videoId, "/jobs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ videoId, instanceId, uploadBase: `http://${UPLOAD_HOST}`, token }),
-    });
+    if (!frame) return yield* Effect.fail(new Error(`missing reader frame ${second}`));
 
-    if (!res.ok) return yield* Effect.fail(new Error(`container POST /jobs: ${res.status} ${(yield* Effect.promise(() => res.text())).slice(0, 200)}`));
-    const { protocol } = yield* Effect.promise(() => res.json<{ protocol?: number }>());
-
-    if (protocol !== JOB_PROTOCOL) {
-      yield* destroyContainer(videoId);
-
-      return yield* Effect.fail(new Error(`container speaks job protocol ${protocol ?? 1}, not ${JOB_PROTOCOL}: its image is from before a rollout`));
-    }
-  });
-
-/**
- * The job status when its event did not come or its container stopped. A container that lost its job may have
- * finished it first: then the manifest is in R2, because the job writes it last. Otherwise the job starts again.
- */
-const checkJob = (videoId: string, instanceId: string, token: string): Effect.Effect<JobStatus, unknown, App> =>
-  Effect.gen(function* () {
-    const res = yield* containerFetch(videoId, `/jobs/${videoId}`);
-
-    if (res.status === 404) {
-      const manifestKey = key(videoId, "manifest.json");
-      const object = yield* r2("GetObject", manifestKey, (bucket) => bucket.get(manifestKey));
-      const manifest = object ? yield* Effect.promise(() => object.json<Manifest>()) : null;
-
-      if (manifest) return { state: "done", stage: "done", error: null, manifest } as JobStatus;
-      yield* startJob(videoId, instanceId, token);
-
-      return { state: "running", stage: null, error: null, manifest: null, restarted: true } as JobStatus;
-    }
-
-    if (!res.ok) return yield* Effect.fail(new Error(`container GET /jobs: ${res.status}`));
-    const job = (yield* Effect.promise(() => res.json())) as JobStatus;
-    yield* annotate({ "container.state": job.state, "container.stage": job.stage ?? "", "container.uploaded": job.uploaded ?? 0, "container.upload_total": job.total ?? 0 });
-
-    return job;
+    return yield* readPosts(detector, yield* Effect.promise(() => frame.arrayBuffer()), { videoId, second, size: "f1920" });
   });
 
 const readRun = (videoId: string, detector: Detector, run: Run, timeline: number[]) =>
   Effect.gen(function* () {
     const observations: Observation[] = [];
     yield* Effect.forEach(pickSeconds(run), (second) =>
-      Effect.gen(function* () {
-        const frameKey = key(videoId, `f1920/${timeline[second]}.jpg`);
-        const frame = yield* r2("GetObject", frameKey, (bucket) => bucket.get(frameKey));
-
-        if (!frame) return yield* Effect.fail(new Error(`missing reader frame ${timeline[second]}`));
-        const lines = yield* readPosts(detector, yield* Effect.promise(() => frame.arrayBuffer()), { videoId, second: timeline[second], size: "f1920" });
-
+      Effect.map(readFrame(videoId, detector, timeline[second]), (lines) => {
         for (const line of lines) observations.push({ second, line });
       }), { concurrency: READ_CONCURRENCY, discard: true });
     const canonical = canonicalHandles(countHandles(yield* catalogHandles(videoId)));
@@ -554,7 +516,3 @@ const cleanup = (videoId: string) =>
   });
 
 export { VideoPipeline as VideoWorkflow };
-
-function audioChunkCount(manifest: Manifest): number {
-  return Array.isArray(manifest.audioChunks) ? manifest.audioChunks.length : manifest.audioChunks;
-}

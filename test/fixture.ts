@@ -9,6 +9,7 @@ mock.module("cloudflare:workers", () => ({
     constructor(public ctx: unknown, public env: unknown) {}
   },
 }));
+
 mock.module("cloudflare:workflows", () => ({ NonRetryableError: class NonRetryableError extends Error { name = "NonRetryableError"; } }));
 
 export const VIDEO = "vid00000001";
@@ -34,8 +35,10 @@ function bucket(objects: Map<string, string | ArrayBuffer>) {
   const body = (key: string) => {
     const value = objects.get(key)!;
     const bytes = typeof value === "string" ? new TextEncoder().encode(value).buffer : value;
+
     return { key, httpEtag: "e", body: null, arrayBuffer: async () => bytes, json: async () => JSON.parse(value as string), text: async () => value };
   };
+
   return {
     get: async (key: string) => (objects.has(key) ? body(key) : null),
     head: async (key: string) => (objects.has(key) ? { key } : null),
@@ -51,15 +54,21 @@ function bucket(objects: Map<string, string | ArrayBuffer>) {
 const ai = {
   run: async (model: string, inputs: any) => {
     const usage = { prompt_tokens: 100, completion_tokens: 10 };
+
     if (model.includes("clef-flash")) {
       // A frame's byte length is 3 × its second, so base64 holds 4 characters per second.
       const second = String(inputs.images[0].base64).length / 4;
       const onScreen = second >= 5 && second <= 8;
+
       return { answers: { frame: { noul: onScreen ? 0.9 : 0.1 }, page: { noul: 0.9 }, chat: { noul: 0.1 } }, usage };
     }
+
     if (model.includes("qwen")) return { choices: [{ message: { content: inputs.max_tokens === 5 ? "X" : `@alice | Alice | ${POST}` }, finish_reason: "stop" }], usage };
+
     if (model === "@cf/cloudflare/clef") return { answers: { read: { noul: 0.9 } }, usage };
+
     if (model.includes("clairic")) return { answers: { quote: { span: [11, 11 + POST.length] } }, usage };
+
     if (model.includes("bge-m3")) return { data: inputs.text.map(() => [0.1, 0.2]) };
     throw new Error(`unexpected model ${model}`);
   },
@@ -68,10 +77,12 @@ const ai = {
 /** The bindings of one fake run. With `failProcessing`, every write of the `processing` status fails. */
 export function env(dsn: string, environment?: string, failProcessing = false): Env & { sqlite: ReturnType<typeof migrated> } {
   const objects = new Map<string, string | ArrayBuffer>();
+
   for (let s = 0; s < FRAMES; s++) {
     objects.set(`videos/${VIDEO}/f640/${s}.jpg`, new Uint8Array(s * 3).buffer as ArrayBuffer);
     objects.set(`videos/${VIDEO}/f1920/${s}.jpg`, new Uint8Array(s * 3).buffer as ArrayBuffer);
   }
+
   const words = ["alice", "says", ...POST.split(" "), "and", "i", "agree"].map((w, i) => [5 + i * 0.3, w]);
   objects.set(`videos/${VIDEO}/words.json`, JSON.stringify(words));
   const db = migrated();
@@ -80,14 +91,18 @@ export function env(dsn: string, environment?: string, failProcessing = false): 
   const prepare = binding.prepare;
   binding.prepare = (sql: string) => {
     const statement = prepare(sql);
+
     if (!failProcessing || !sql.startsWith("UPDATE videos SET status")) return statement;
     const bind = statement.bind;
     statement.bind = (...values: unknown[]) => {
       if (values[0] === "processing") statement.run = async () => { throw new Error("D1 unavailable"); };
+
       return bind(...values);
     };
+
     return statement;
   };
+
   return {
     sqlite: db,
     SENTRY_DSN: dsn,
@@ -118,6 +133,7 @@ export async function runVideo(options: { dsn: string; environment?: string; job
   const result = await new Workflow(ctx, e).run(event, step).then(() => ({ completed: true as const }), (error: unknown) => ({ completed: false as const, error }));
   await Promise.all(pending);
   await settle(1500);
+
   return { ...result, db: e.sqlite };
 }
 

@@ -81,6 +81,7 @@ describe("parseReaderLines", () => {
       "@giri | giri | is hosting I cant believe IM A VTUBER",
       "@teej_dv | teej dv | is hosting",
     ].join("\n");
+
     expect(parseReaderLines(output)).toEqual([]);
   });
 
@@ -195,6 +196,7 @@ describe("canonicalHandles", () => {
       { handle: "@lisabey", displayName: "" },
       { handle: "@unknown", displayName: "A" },
     ];
+
     expect(countHandles(rows)).toEqual([{ handle: "@LisaBey", names: new Set(["Lisa", "Lisa B."]), count: 3 }]);
   });
 });
@@ -209,6 +211,7 @@ describe("groupPosts", () => {
       { second: 110, line: line("@Theo", "Anthropic has no small model anymore, right") },
       { second: 105, line: line("@theo", "something completely different here") },
     ]);
+
     expect(groups).toEqual([
       {
         handle: "@Theo",
@@ -234,10 +237,12 @@ describe("groupPosts", () => {
   test("keeps each slice of one scrolled post, which share only a run of words", () => {
     const top = "We are doubling all usage limits for all tiers today and we will keep shipping better models over time";
     const bottom = "keep shipping better models over time so your effective usage grows and nothing else changes for anyone at all";
+
     const [group, ...rest] = groupPosts([
       { second: 0, line: line("@tibo", top) },
       { second: 5, line: line("@tibo", bottom) },
     ]);
+
     expect(rest).toEqual([]);
     expect(group.slices).toEqual([bottom, top]);
     expect(group.lastSeen).toBe(5);
@@ -248,6 +253,7 @@ describe("groupPosts", () => {
       { second: 0, line: line("@dedene", "\"Coding is solved.\"") },
       { second: 5, line: line("@dedene", "\"Coding is solved.\" But we still cannot hot reload the agent") },
     ]);
+
     expect(groups).toHaveLength(1);
   });
 
@@ -256,6 +262,7 @@ describe("groupPosts", () => {
       { second: 0, line: line("@peterpme", "poteto's cursor profi") },
       { second: 5, line: line("@peterpme", "poteto's cursor profile is public. She's used 1.5T tokens") },
     ]);
+
     expect(groups).toHaveLength(1);
   });
 
@@ -264,6 +271,7 @@ describe("groupPosts", () => {
       { second: 0, line: line("@tibo", "Yes") },
       { second: 5, line: line("@tibo", "We are doubling all limits, yes") },
     ]);
+
     expect(groups.map((g) => g.text)).toEqual(["Yes", "We are doubling all limits, yes"]);
   });
 
@@ -276,6 +284,7 @@ describe("groupPosts", () => {
       { second: 1113, line: line("@gautamgoel978", "b") },
       { second: 1128, line: line("@gautamgoel", "b") },
     ]);
+
     expect(groups.map((g) => [g.handle, g.firstSeen, g.lastSeen])).toEqual([
       ["@lydiahallie", 509, 519],
       ["@gautamgoel978", 1108, 1128],
@@ -287,35 +296,42 @@ describe("groupPosts", () => {
       { second: 1, line: line("@a", "same text here") },
       { second: 2, line: line("@b", "same text here") },
     ]);
+
     expect(groups.map((g) => g.handle)).toEqual(["@a", "@b"]);
   });
 
   test("keeps a near handle with another display name apart", () => {
     const text = "We are releasing a new version today";
+
     const groups = groupPosts([
       { second: 0, line: { handle: "@opencode", displayName: "OpenCode", text } },
       { second: 5, line: { handle: "@odincode", displayName: "Mikey", text } },
     ]);
+
     expect(groups.map((g) => g.handle)).toEqual(["@opencode", "@odincode"]);
   });
 
   test("merges a near handle with the same display name, and one handle under a misread name", () => {
     const text = "We are releasing a new version today";
+
     const groups = groupPosts([
       { second: 0, line: { handle: "@thsottiaux", displayName: "Tibo", text } },
       { second: 5, line: { handle: "@thsoittiaux", displayName: "Tibo", text } },
       { second: 10, line: { handle: "@thsottiaux", displayName: "Tib0", text } },
     ]);
+
     expect(groups.map((g) => [g.handle, g.lastSeen])).toEqual([["@thsottiaux", 10]]);
   });
 
   test("joins a misread handle to the group with the same post text", () => {
     const post = "She strives to be a power user of every tool she touches and writes about it";
+
     const groups = groupPosts([
       { second: 1920, line: line("@poteto", post) },
       { second: 1925, line: line("@lauren", `${post} every week`, "Lauren") },
       { second: 1930, line: line("@poteto", post) },
     ]);
+
     expect(groups.map((g) => [g.handle, g.firstSeen, g.lastSeen])).toEqual([["@poteto", 1920, 1930]]);
   });
 
@@ -324,6 +340,7 @@ describe("groupPosts", () => {
       { second: 0, line: line("@alice", "yes") },
       { second: 5, line: line("@bob", "yes this completely different post concerns database backups") },
     ]);
+
     expect(groups.map((g) => g.handle)).toEqual(["@alice", "@bob"]);
   });
 
@@ -331,31 +348,37 @@ describe("groupPosts", () => {
     const post = "Placeholder handles come from the reader copying its output format";
     const [placeholder] = parseReaderLines(`@handle | display name | ${post}`);
     expect(placeholder).toEqual({ handle: "@unknown", displayName: "", text: post });
+
     const groups = groupPosts([
       { second: 1, line: placeholder },
       { second: 6, line: line("@theo", post) },
       { second: 11, line: { ...placeholder, text: "a different post that nobody can read the handle of" } },
     ]);
+
     expect(groups.map((g) => [g.handle, g.displayName, g.lastSeen])).toEqual([["@theo", "Name", 6], ["@unknown", "", 11]]);
   });
 
   test("short unknown posts join by text instead of one group per frame", () => {
     const unknown = (text: string) => ({ handle: "@unknown", displayName: "", text });
+
     const groups = groupPosts([
       { second: 1, line: unknown("this is great") },
       { second: 6, line: unknown("this is great") },
       { second: 11, line: unknown("a different short post") },
     ]);
+
     expect(groups.map((g) => [g.firstSeen, g.lastSeen])).toEqual([[1, 6], [11, 11]]);
   });
 
   test("short unknown posts stay apart when the words or the display name differ", () => {
     const unknown = (displayName: string, text: string) => ({ handle: "@unknown", displayName, text });
+
     const groups = groupPosts([
       { second: 1, line: unknown("Alice", "this is great") },
       { second: 6, line: unknown("Alice", "this is not great") },
       { second: 11, line: unknown("Bob", "this is great") },
     ]);
+
     expect(groups.map((g) => [g.displayName, g.text])).toEqual([["Alice", "this is great"], ["Alice", "this is not great"], ["Bob", "this is great"]]);
   });
 
@@ -364,6 +387,7 @@ describe("groupPosts", () => {
       { second: 20, line: line("@a", "same text here") },
       { second: 10, line: line("@a", "same text here") },
     ]);
+
     expect(group.firstSeen).toBe(10);
     expect(group.frameSecond).toBe(10);
     expect(group.lastSeen).toBe(20);
@@ -504,6 +528,7 @@ describe("wordsFromSegments", () => {
       [{ start: 0, end: 2, text: " hi there", words: [{ word: " hi", start: 0.1, end: 0.4 }, { word: " there", start: 0.5, end: 1 }] }],
       600,
     );
+
     expect(words).toEqual([[600.1, "hi"], [600.5, "there"]]);
   });
 

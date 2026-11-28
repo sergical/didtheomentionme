@@ -29,6 +29,7 @@ export function usageAttributes(model: string, input: number, output = 0, estima
   const price = PRICES[model];
   const inputCost = price ? (input * price.input) / 1e6 : undefined;
   const outputCost = price ? (output * (price.output ?? 0)) / 1e6 : undefined;
+
   return {
     "gen_ai.usage.input_tokens": input,
     "gen_ai.usage.output_tokens": output,
@@ -46,6 +47,7 @@ export const whisperCostAttributes = (seconds: number): Attributes => ({
 });
 
 export type FrameReference = { videoId: string; second: number; size: "f640" | "f1920" };
+
 const FRAME_ORIGIN = "https://didtheomention.me";
 
 export function frameAttributes(frame: FrameReference): Attributes {
@@ -62,11 +64,13 @@ const KB = (base64Length: number) => Math.round((base64Length * 3) / 4 / 1024);
 /** A frame sent to the reader would add its full base64 JPEG to `gen_ai.input.messages`. */
 export function redactImages(messages: string, frameUrl: unknown): string {
   const reference = typeof frameUrl === "string" ? frameUrl : undefined;
+
   return messages.replace(/data:([\w/+.-]+);base64,[A-Za-z0-9+/=]+/g, (match, type: string) => reference ?? `[${type}, ${KB(match.length)} KB]`);
 }
 
 async function sha1Hex(text: string): Promise<string> {
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text)));
+
   return Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 

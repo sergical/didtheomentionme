@@ -38,6 +38,7 @@ test("each button keeps its copied label for its own time", () => {
 test("a browser without the Clipboard API shows the link to copy by hand", async () => {
   const navigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true });
+
   try {
     expect(await Effect.runPromise(CopyLink({ url: "https://didtheomention.me/?handle=a", button: "copy" }).effect)).toEqual(Message.FailedCopy({ url: "https://didtheomention.me/?handle=a" }));
   } finally {

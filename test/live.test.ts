@@ -16,9 +16,12 @@ describe.skipIf(!process.env.LIVE_DSN)("live check", () => {
       const url = new Request(input, init).url;
       const path = new URL(url).pathname.split("/").filter(Boolean).slice(2).join("/");
       const toSentry = url.startsWith(new URL(dsn).origin);
+
       try {
         const res = await send(input, init);
+
         if (toSentry) answers.push({ path, status: res.status });
+
         return res;
       } catch (err) {
         // A request that never got an answer counts as failed, with status 0.

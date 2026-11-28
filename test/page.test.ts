@@ -7,6 +7,7 @@ import { resultPath, shareTitle } from "../src/share";
 const renderPage = (page: PageData) => Effect.runPromise(render(page));
 
 const source = { id: "prime", name: "Prime", avatar: "https://example.com/avatar.jpg", hue: 55, coverage: { videos: 1, from: null, to: null } };
+
 const data: PageData = {
   source, sources: [source], input: { handle: "theo", tweet: "", source: "prime" },
   result: { source, handle: "theo", coverage: source.coverage, matches: [{ videoId: "abc", title: "Video <title>", publishedAt: null, handle: "@theo", displayName: null, text: "A post", firstSeen: 12, lastSeen: 20, times: [12, 40], frameUrl: "/frame/abc/12.jpg", exact: false, readAloud: { at: 14, quote: "A post", reading: "all" } }] },
@@ -16,11 +17,13 @@ test("all video entry points open a safe new tab with a screen reader hint", asy
   const html = await renderPage(data);
   const links = [...html.matchAll(/<a\b[^>]*href="https:\/\/www.youtube.com[^>]*>/g)];
   expect(links).toHaveLength(5);
+
   for (const [link] of links) {
     expect(link).toContain('target="_blank"');
     expect(link).toContain('rel="noopener noreferrer"');
     expect(link).toContain('aria-describedby="new-tab-hint"');
   }
+
   expect(html).toContain('id="new-tab-hint"');
 });
 
@@ -49,9 +52,11 @@ test("a text search excerpt starts near the first matching word", async () => {
 
 test("the verdict and the card say how much was read", async () => {
   const [first] = data.result!.matches;
+
   const renderReadings = (...readings: ("all" | "part" | "comment" | null)[]) => renderPage({ ...data, result: { ...data.result!, matches: readings.map((reading, i) => ({
     ...first, videoId: `v${i}`, readAloud: reading && { at: 14, quote: "Back to what they said", reading },
   })) } });
+
   expect(await renderReadings("part")).toContain("Prime showed your post and read part of it aloud.");
   expect(await renderReadings("part")).toContain("Prime read part of it aloud at");
   expect(await renderReadings("comment")).toContain("Prime showed your post and talked about it, but did not read it aloud.");

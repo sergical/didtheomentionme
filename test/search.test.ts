@@ -5,6 +5,7 @@ import { d1, migrated } from "./d1";
 import { DSN, captureOtlp, settle } from "./harness";
 
 mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
+
 const { lookup } = await import("../src/lookup");
 const { runApp } = await import("../src/runtime");
 const { startPending } = await import("../src/videos");
@@ -49,14 +50,17 @@ beforeEach(() => {
 });
 
 const realFetch = globalThis.fetch;
+
 afterEach(() => { globalThis.fetch = realFetch; });
 
 describe("text search", () => {
   const crowded = () => {
     video("prime1", "prime", "2026-10-01");
     video("theo1", "theo", "2026-09-01");
+
     for (let i = 1; i <= 25; i++) mention(i, "prime1", "someone", "typescript generics are hard to read");
   };
+
   const theoOnly = (q: string) => runApp(env(), lookup({ handle: "", tweet: "", q, source: "theo" }));
 
   test("another creator's word hits do not crowd out the requested creator", async () => {
@@ -118,12 +122,15 @@ test("a lookup counts the creator's coverage beside the search, not after it", a
   const prepare = slow.prepare;
   slow.prepare = (sql: string) => {
     const statement = prepare(sql);
+
     for (const name of ["all", "first", "run"] as const) {
       const call = statement[name];
       (statement as Record<string, unknown>)[name] = async () => (await new Promise((r) => setTimeout(r, 30)), call());
     }
+
     return statement;
   };
+
   const sent = captureOtlp();
   await runApp({ ...env(), DB: slow, SENTRY_DSN: DSN } as unknown as Env, lookup({ handle: "dev", tweet: "", source: "theo" }));
   await settle(1200);

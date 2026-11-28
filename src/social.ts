@@ -19,8 +19,10 @@ export const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180
 async function png(svg: string, width = 1200): Promise<Uint8Array> {
   await (ready ??= initWasm(wasm));
   const renderer = new Resvg(svg, { fitTo: { mode: "width", value: width }, font: { fontBuffers: [new Uint8Array(font)], defaultFontFamily: "Inter" } });
+
   try {
     const image = renderer.render();
+
     try { return image.asPng().slice(); } finally { image.free(); }
   } finally { renderer.free(); }
 }
@@ -28,15 +30,19 @@ async function png(svg: string, width = 1200): Promise<Uint8Array> {
 const dataUrl = (buffer: ArrayBuffer, type: string) => {
   const bytes = new Uint8Array(buffer);
   let binary = "";
+
   for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+
   return `data:${type};base64,${btoa(binary)}`;
 };
 
 const frameImage = (match?: Match) =>
   Effect.gen(function* () {
     const path = match?.frameUrl.match(/^\/frame\/([\w-]+)\/(\d+)\.jpg$/);
+
     if (!path) return "";
     const object = yield* largeFrame(path[1], path[2]);
+
     return object ? dataUrl(yield* Effect.promise(() => object.arrayBuffer()), "image/jpeg") : "";
   });
 
@@ -64,6 +70,7 @@ function imageSvg(name: string, accent: string, result: LookupResult | undefined
   const subject = result?.query ? `“${cut(result.query, 24)}”` : `@${result?.handle ?? "you"}`;
   const pill = first ? `▶ ${formatTime(first.firstSeen)} · On screen` : result ? "Not on screen yet" : "▶ 12:34 · On screen";
   const pillY = frame ? 386 : 366;
+
   const left = result
     ? `<text x="128" y="91" font-size="25">Did ${xml(name)} mention me?</text>
 <text x="60" y="214" font-size="${subject.length > 19 ? 36 : 48}"${subject.length > 10 ? ' textLength="480" lengthAdjust="spacingAndGlyphs"' : ""} fill="${accent}">${xml(subject)}</text>
@@ -77,6 +84,7 @@ function imageSvg(name: string, accent: string, result: LookupResult | undefined
 <text x="60" y="318" font-size="84" letter-spacing="-3">Did ${xml(name)}</text>
 <text x="60" y="408" font-size="84" letter-spacing="-3">mention <tspan fill="${accent}">me?</tspan></text>
 <text x="62" y="490" font-size="26" fill="#c4b9c9">Paste your X handle. Get the exact second.</text>`;
+
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
 <defs><clipPath id="frame"><rect x="594" y="142" width="550" height="310" rx="22"/></clipPath><clipPath id="face"><circle cx="88" cy="82" r="25"/></clipPath></defs>
 <rect width="1200" height="630" fill="#17131c"/>
@@ -97,25 +105,34 @@ export const socialImage = (url: URL, waitUntil: (promise: Promise<unknown>) => 
   Effect.gen(function* () {
     if (url.pathname === "/favicon.svg") return new Response(FAVICON, { headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=604800" } });
     const source = getSource(url.searchParams.get("source"));
+
     if (!source) return new Response("unknown source", { status: 400 });
     const input = { handle: url.searchParams.get("handle") ?? "", tweet: url.searchParams.get("tweet") ?? "", q: url.searchParams.get("q") ?? "", source: source.id };
+
     if (input.handle.length > 512 || input.tweet.length > 2048 || input.q.length > 512) return new Response("query too long", { status: 400 });
     const key = new Request(`${url.origin}${url.pathname}${resultPath(input, source.id).slice(1)}&v=8`);
     const cache = yield* Effect.promise(() => caches.open("social-v8"));
     const cached = yield* Effect.promise(() => cache.match(key));
+
     if (cached) return cached;
     const apple = url.pathname === "/apple-touch-icon.png";
     let result: LookupResult | undefined;
+
     if (!apple && (input.handle.trim() || input.tweet.trim() || input.q.trim())) {
       const found = yield* Effect.result(lookup(input));
+
       if (found._tag === "Failure") return new Response(found.failure.message, { status: 400 });
       result = found.success;
     }
+
     const first = result?.matches.find((m) => !result?.query || (m.overlap ?? 0) >= 0.75);
     const [frame, avatar] = apple ? ["", ""] : yield* Effect.all([frameImage(first), avatarImage(source.avatar)], { concurrency: 2 });
+
     const bytes = yield* Effect.promise(() => png(apple ? FAVICON : imageSvg(source.name, source.id === "prime" ? "#ffa766" : "#f58fb1", result, frame, avatar), apple ? 180 : 1200))
       .pipe(span("render png", "function"));
+
     const response = new Response(new Uint8Array(bytes).buffer, { headers: { "content-type": "image/png", "cache-control": `public, max-age=${result ? 3600 : 86400}` } });
     waitUntil(cache.put(key, response.clone()));
+
     return response;
   });

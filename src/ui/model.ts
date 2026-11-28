@@ -63,6 +63,7 @@ const PageFlagsSchema = Schema.Unknown as unknown as Schema.Codec<PageFlags, Pag
 export const Flags = PageFlagsSchema;
 
 const Button = Schema.Literals(["share", "copy"]);
+
 export type Button = typeof Button.Type;
 
 export const Model = Schema.Struct({
@@ -80,6 +81,7 @@ export const Model = Schema.Struct({
   /** On a phone with a share sheet, "Share result" does it all, so "Copy link" hides. */
   hideCopy: Schema.Boolean,
 });
+
 export type Model = typeof Model.Type;
 
 export const Message = defineMessageUnion({
@@ -97,4 +99,5 @@ export const Message = defineMessageUnion({
   ShowedPage: {},
   DetectedSharing: { hideCopy: Schema.Boolean },
 });
+
 export type Message = typeof Message.Type;

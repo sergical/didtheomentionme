@@ -10,6 +10,7 @@ export function parseDsn(dsn: string) {
   const url = new URL(dsn);
   const projectId = url.pathname.replace(/^\/+|\/+$/g, "");
   const api = `${url.protocol}//${url.host}/api/${projectId}`;
+
   return { key: url.username, otlp: `${api}/integration/otlp`, envelope: `${api}/envelope/` };
 }
 
@@ -36,10 +37,13 @@ export const otlpSpan = (span: RecordedSpan) => ({
 /** Stack lines in the V8 format, oldest call first, as Sentry wants them. */
 export function stackFrames(stack: string | undefined) {
   const frames = [];
+
   for (const line of (stack ?? "").split("\n")) {
     const match = line.match(/^\s*at (?:(.+?) \()?(.+?):(\d+):(\d+)\)?$/);
+
     if (match) frames.push({ function: match[1] ?? "?", filename: match[2], lineno: Number(match[3]), colno: Number(match[4]), in_app: !match[2].includes("node_modules") });
   }
+
   return frames.reverse();
 }
 
@@ -47,6 +51,7 @@ export function stackFrames(stack: string | undefined) {
 export function errorEnvelope(error: unknown, attributes: Attributes, span: Tracer.AnySpan | undefined, now = Date.now(), environment = "production") {
   const eventId = crypto.randomUUID().replace(/-/g, "");
   const err = error instanceof Error ? error : new Error(errorMessage(error));
+
   const event = {
     event_id: eventId,
     timestamp: now / 1000,
@@ -57,6 +62,7 @@ export function errorEnvelope(error: unknown, attributes: Attributes, span: Trac
     tags: Object.fromEntries(clean(attributes).map(([k, v]) => [k, String(v)])),
     contexts: span ? { trace: { trace_id: span.traceId, span_id: span.spanId } } : undefined,
   };
+
   return `${JSON.stringify({ event_id: eventId, sent_at: new Date(now).toISOString() })}\n${JSON.stringify({ type: "event" })}\n${JSON.stringify(event)}\n`;
 }
 
@@ -65,6 +71,7 @@ export function otlpLayer(dsn: string, environment = "production") {
   const { key, otlp, envelope } = parseDsn(dsn);
   const SERVICE = service(environment);
   const auth = { "x-sentry-auth": `sentry sentry_key=${key}` };
+
   const post = (url: string, body: string, contentType: string, headers: Record<string, string>) =>
     HttpClient.execute(HttpClientRequest.post(url).pipe(HttpClientRequest.setHeaders(headers), HttpClientRequest.bodyText(body, contentType))).pipe(
       Effect.flatMap((res) => (res.status < 300 ? Effect.void : Effect.logWarning(`Sentry answered ${res.status} for ${url}`))),
@@ -75,8 +82,10 @@ export function otlpLayer(dsn: string, environment = "production") {
   const telemetry = Layer.effect(Telemetry)(
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
+
       const send = (url: string, body: string, contentType: string, headers: Record<string, string>) =>
         post(url, body, contentType, headers).pipe(Effect.provideService(HttpClient.HttpClient, client));
+
       return Telemetry.of({
         recordSpan: (span) =>
           send(`${otlp}/v1/traces`, JSON.stringify({ resourceSpans: [{ resource: { attributes: entriesToAttributes([["service.name", SERVICE.serviceName], ...Object.entries(SERVICE.attributes)]) }, scopeSpans: [{ scope: { name: "didtheomentionme" }, spans: [otlpSpan(span)] }] }] }), "application/json", auth),
@@ -96,15 +105,18 @@ export function otlpLayer(dsn: string, environment = "production") {
         span(options) {
           const span = otlpTracer.span(options);
           span.attribute("sentry.description", options.name);
+
           return span;
         },
         context: otlpTracer.context,
       })),
   );
+
   // Traces and logs only: Sentry takes no OTLP metrics, and Effect's combined layer would post them anyway.
   const exporter = Layer.mergeAll(
     tracer,
     OtlpLogger.layer({ url: `${otlp}/v1/logs`, headers: auth, resource: SERVICE, maxBatchSize: 512, exportInterval: "1 second", shutdownTimeout: "10 seconds" }),
   ).pipe(Layer.provideMerge(OtlpExporter.layerFlusher), Layer.provide(OtlpSerialization.layerJson));
+
   return Layer.mergeAll(telemetry, exporter);
 }

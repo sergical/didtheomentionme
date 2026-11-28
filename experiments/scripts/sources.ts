@@ -14,7 +14,9 @@ async function run(model: string, body: unknown): Promise<any> {
       headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+
     if (res.ok) return (await res.json()).result;
+
     if (attempt >= 4 || (res.status !== 429 && res.status < 500)) return { error: `${res.status} ${(await res.text()).slice(0, 300)}` };
     await Bun.sleep(1000 * 2 ** attempt);
   }
@@ -22,24 +24,32 @@ async function run(model: string, body: unknown): Promise<any> {
 
 const words = readFileSync(process.argv[2], "utf8").trim().split("\n").map((l) => {
   const [t, w] = l.split("\t");
+
   return [Number(t), w] as const;
 });
+
 const out = process.argv[3];
+
 writeFileSync(out, "");
+
 const end = words.at(-1)![0];
 
 const chunks: number[] = [];
+
 for (let s = 0; s < end; s += 100) chunks.push(s);
 
 await Promise.all(
   chunks.map(async (start) => {
     let state = "";
     const offsets: [number, number][] = [];
+
     for (const [t, w] of words.filter(([t]) => t >= start && t < start + 120)) {
       offsets.push([state.length, t]);
       state += (state ? " " : "") + w;
     }
+
     const timeAt = (char: number) => Math.round(offsets.findLast(([o]) => o <= char)?.[1] ?? start);
+
     const [c, g] = await Promise.all([
       run("@cf/cloudflare/clairic", { model: "clairic", state, fields: { sources: { type: "list", items: "text", instructions: INSTRUCTIONS } } }),
       run("@cf/google/gemma-4-26b-a4b-it", {
@@ -48,6 +58,7 @@ await Promise.all(
         chat_template_kwargs: { enable_thinking: false },
       }),
     ]);
+
     const a = c.answers?.sources;
     appendFileSync(
       out,
@@ -61,4 +72,5 @@ await Promise.all(
     );
   }),
 );
+
 console.log("done");

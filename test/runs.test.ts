@@ -4,6 +4,7 @@ import type { Env } from "../src/env";
 import { d1, migrated } from "./d1";
 
 mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
+
 const { endRun, reconcileProcessing, startPending, startRun, startWorkflow } = await import("../src/videos");
 const { runApp } = await import("../src/runtime");
 
@@ -17,6 +18,7 @@ function env(): Env {
     VIDEO_WORKFLOW: {
       get: async (id: string) => {
         if (!(id in instances)) throw new Error("instance.not_found");
+
         return { id, status: async () => ({ status: instances[id] }) };
       },
       create: async ({ id }: { id: string }) => create(id),
@@ -83,6 +85,7 @@ test("a failed run close is retried on the next reconcile", async () => {
       failed = true;
       throw new Error("D1 unavailable");
     }
+
     return prepare(sql);
   }) as typeof flaky.DB.prepare;
   await runApp(flaky, reconcileProcessing);
@@ -130,6 +133,7 @@ test("a failed instance lookup leaves the run open and starts nothing", async ()
   flaky.VIDEO_WORKFLOW.get = async () => {
     throw new Error("Workflows unavailable");
   };
+
   await expect(runApp(flaky, startWorkflow("abc", "theo"))).rejects.toThrow("Workflows unavailable");
   expect(runs("abc")).toEqual([{ instance_id: "abc_old", outcome: null, reason: null }]);
 });
@@ -138,6 +142,7 @@ test("a failed create closes its run, so the next start can try again", async ()
   create = async () => {
     throw new Error("Workflows unavailable");
   };
+
   await expect(runApp(env(), startWorkflow("-abc", "theo"))).rejects.toThrow("Workflows unavailable");
   const [run] = runs("-abc") as { instance_id: string; outcome: string; reason: string }[];
   expect(run.instance_id).toMatch(/^v-abc_/);
@@ -152,8 +157,10 @@ test("a failed instance lookup marks that video and still starts the next one", 
   const get = flaky.VIDEO_WORKFLOW.get;
   flaky.VIDEO_WORKFLOW.get = async (id: string) => {
     if (id === "abc_old") throw new Error("Workflows unavailable");
+
     return get(id);
   };
+
   expect(await runApp(flaky, startPending)).toBe(1);
   expect(db.query("SELECT id, status, error FROM videos ORDER BY id").all()).toEqual([
     { id: "abc", status: "error", error: "workflow start failed: Workflows unavailable" },

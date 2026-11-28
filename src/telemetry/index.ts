@@ -4,6 +4,7 @@ import { otlpLayer } from "./otlp";
 import { Telemetry } from "./service";
 
 export * from "./model";
+
 export { Telemetry } from "./service";
 
 const offLayer = Layer.succeed(Telemetry)(Telemetry.of({ recordSpan: () => Effect.void, reportError: () => Effect.void }));

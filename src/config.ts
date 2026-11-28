@@ -115,6 +115,8 @@ export function getSource(id: string | null | undefined): Source | undefined {
 
 export function getDetector(id: string): Detector {
   const detector = DETECTORS.find((d) => d.id === id);
+
   if (!detector) throw new Error(`unknown detector ${id}`);
+
   return detector;
 }

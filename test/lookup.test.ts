@@ -34,10 +34,12 @@ const match = (over: Partial<Match>): Match => ({
 describe("mergeRepeats", () => {
   test("one post twice in a video becomes one match with both times", () => {
     const longer = "After Astra released I once again am waiting for this 10x cheaper AI per year to land";
+
     const merged = mergeRepeats([
       match({ firstSeen: 209, times: [209], text: longer }),
       match({ firstSeen: 59, times: [59], readAloud: { at: 62, quote: "waiting for this", reading: "part" } }),
     ]);
+
     expect(merged).toHaveLength(1);
     expect(merged[0].times).toEqual([59, 209]);
     expect(merged[0].text).toBe(longer);
@@ -50,6 +52,7 @@ describe("mergeRepeats", () => {
       match({ firstSeen: 2, text: "Something else entirely about databases" }),
       match({ firstSeen: 3, videoId: "v2" }),
     ]);
+
     expect(merged).toHaveLength(3);
   });
 });
@@ -79,15 +82,18 @@ describe("bestReadings", () => {
       { video_id: "v2", text: post, read_aloud_at: 5, quote: post },
       { video_id: "v1", text: "Something else entirely about databases", read_aloud_at: 9, quote: "databases" },
     ]);
+
     expect(m.readAloud).toEqual({ at: 1924, quote: read, reading: "part" });
   });
 
   test("takes the full reading over a partial one, in any row order", () => {
     const text = "alpha bravo charlie delta echo";
+
     const rows = [
       { video_id: "v1", text, read_aloud_at: 10, quote: "alpha bravo" },
       { video_id: "v1", text, read_aloud_at: 20, quote: text },
     ];
+
     for (const quoted of [rows, [...rows].reverse()]) {
       const [m] = bestReadings([match({ text, readAloud: null })], quoted);
       expect(m.readAloud).toEqual({ at: 20, quote: text, reading: "all" });

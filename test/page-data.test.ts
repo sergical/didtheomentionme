@@ -19,43 +19,37 @@ function seeded(seed: number) {
 const TEXTS = ["", "theo", "Théo – t3.gg 🚀", "日本語のポスト", `<b>"quoted" & 'single'</b>`, "line one\nline two", "x".repeat(300)];
 
 /**
- * Values of every kind a page holds, made without the schema, so a field the schema forgets is still in the input.
- * An optional field is left out, set to undefined, or set to a value: the Worker does all three.
+ * The pages the routes make, with random values in them. It does not use the schema, so a field the schema forgets,
+ * mistypes or wrongly requires shows up as a difference after the handoff.
  */
 function generator(next: () => number) {
   const int = (max = 5000) => Math.floor(next() * max);
   const pick = <T>(items: readonly T[]): T => items[int(items.length)];
   const text = () => pick(TEXTS);
   const orNull = <T>(make: () => T) => (next() < 0.3 ? null : make());
-  const leftOut = () => next() < 0.3;
   const orUndefined = <T>(make: () => T) => (next() < 0.3 ? undefined : make());
   const list = <T>(make: () => T) => Array.from({ length: int(4) }, make);
   const coverage = () => ({ videos: int(), from: orNull(text), to: orNull(text) });
   const source = (): SourceRef => ({ id: text(), name: text(), avatar: text(), hue: int(360), coverage: coverage() });
+  const creator = () => ({ id: text(), name: text() });
   const reading = () => pick(["all", "part", "comment"] as const);
 
   const match = (): Match => ({
     videoId: text(), title: orNull(text), publishedAt: orNull(text), handle: text(), displayName: orNull(text), text: text(),
     firstSeen: int(), lastSeen: int(), times: list(int), frameUrl: text(), exact: next() < 0.5,
     readAloud: orNull(() => ({ at: int(), quote: text(), reading: reading() })),
-    ...(leftOut() ? {} : { overlap: orUndefined(next) }),
   });
 
-  const result = (): LookupResult => ({
-    source: { id: text(), name: text() }, handle: orNull(text), coverage: coverage(), matches: list(match),
-    ...(leftOut() ? {} : { query: orUndefined(text) }),
-    ...(leftOut() ? {} : { tweet: orUndefined(() => ({ id: text(), handle: text(), text: text(), createdAt: orNull(text) })) }),
-    ...(leftOut() ? {} : { tweetError: orUndefined(text) }),
+  // A handle search sets `tweet` and `tweetError` even when it has neither. A text search scores each match.
+  const handleSearch = (): LookupResult => ({
+    source: creator(), handle: text(), coverage: coverage(), matches: list(match),
+    tweet: orUndefined(() => ({ id: text(), handle: text(), text: text(), createdAt: orNull(text) })), tweetError: orUndefined(text),
   });
 
-  // The route always names the creator in a page's input.
-  const input = () => ({ handle: text(), tweet: text(), source: text(), ...(leftOut() ? {} : { q: orUndefined(text) }) }) satisfies LookupInput;
+  const textSearch = (): LookupResult => ({ source: creator(), handle: null, query: text(), coverage: coverage(), matches: list(() => ({ ...match(), overlap: next() })) });
 
-  const lookup = (): PageFlags => ({
-    kind: "lookup", source: source(), sources: list(source), input: input(),
-    ...(leftOut() ? {} : { result: orUndefined(result) }),
-    ...(leftOut() ? {} : { error: orUndefined(text) }),
-  });
+  // The route fills in every field of a page's input.
+  const form = () => ({ kind: "lookup" as const, source: source(), sources: list(source), input: { handle: text(), tweet: text(), q: text(), source: text() } satisfies LookupInput });
 
   const explore = (): ExploreData => ({
     source: source(), sources: list(source), xHandle: text(), sort: pick(["newest", "posts"] as const),
@@ -67,7 +61,16 @@ function generator(next: () => number) {
     crossovers: list(() => ({ other: { id: text(), name: text(), xHandle: text() }, showed: int(), shownBy: int() })),
   });
 
-  return (): PageFlags => (next() < 0.5 ? lookup() : { kind: "explore", ...explore() });
+  // The lookup page is the empty form, a result of either search, or an error. The explore page is the other page.
+  const pages: (() => PageFlags)[] = [
+    form,
+    () => ({ ...form(), result: handleSearch() }),
+    () => ({ ...form(), result: textSearch() }),
+    () => ({ ...form(), error: text() }),
+    () => ({ kind: "explore", ...explore() }),
+  ];
+
+  return (): PageFlags => pick(pages)();
 }
 
 // The handoff Foldkit does with the page data: encode with the schema, write JSON into the page, parse and decode.

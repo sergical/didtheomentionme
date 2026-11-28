@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, expect, mock, test } from "bun:test";
-import type { Env } from "../src/env";
+import { env as bindings, workflows } from "./bindings";
 import { d1, migrated } from "./d1";
 
 mock.module("@cloudflare/containers", () => ({ Container: class {}, ContainerProxy: class {}, getContainer: () => ({}) }));
@@ -9,31 +9,19 @@ const { endRun, reconcileProcessing, startPending, startRun, startWorkflow } = a
 const { runApp } = await import("../src/runtime");
 
 let db: Database;
-let instances: Record<string, string> = {};
+const instances = new Map<string, InstanceStatus["status"]>();
 let create: (id: string) => Promise<void>;
 
-function env(): Env {
-  return {
-    DB: d1(db),
-    VIDEO_WORKFLOW: {
-      get: async (id: string) => {
-        if (!(id in instances)) throw new Error("instance.not_found");
-
-        return { id, status: async () => ({ status: instances[id] }) };
-      },
-      create: async ({ id }: { id: string }) => create(id),
-    },
-  } as unknown as Env;
-}
+const env = () => bindings({ DB: d1(db), VIDEO_WORKFLOW: workflows(instances, (id) => create(id)) });
 
 const runs = (videoId: string) =>
-  db.query("SELECT instance_id, outcome, reason FROM video_runs WHERE video_id = ? ORDER BY instance_id").all(videoId);
+  db.query<{ instance_id: string; outcome: string | null; reason: string | null }, [string]>("SELECT instance_id, outcome, reason FROM video_runs WHERE video_id = ? ORDER BY instance_id").all(videoId);
 
 beforeEach(() => {
   db = migrated();
-  instances = {};
+  instances.clear();
   create = async (id) => {
-    instances[id] = "queued";
+    instances.set(id, "queued");
   };
 });
 
@@ -64,7 +52,7 @@ test("reconcile ends the run of a workflow that finished without a final status"
   await runApp(env(), startRun("abc", "abc"));
   await runApp(env(), endRun("abc", "bot_check"));
   await runApp(env(), startRun("abc", "abc_1"));
-  instances = { abc: "complete", abc_1: "terminated" };
+  instances.set("abc", "complete").set("abc_1", "terminated");
   await runApp(env(), reconcileProcessing);
   expect(runs("abc")).toEqual([
     { instance_id: "abc", outcome: "bot_check", reason: null },
@@ -76,18 +64,19 @@ test("reconcile ends the run of a workflow that finished without a final status"
 test("a failed run close is retried on the next reconcile", async () => {
   db.query("INSERT INTO videos (id, source, status, updated_at) VALUES ('abc', 'theo', 'processing', ?)").run(new Date().toISOString());
   await runApp(env(), startRun("abc", "abc"));
-  instances = { abc: "errored" };
+  instances.set("abc", "errored");
   const flaky = env();
   const prepare = flaky.DB.prepare.bind(flaky.DB);
   let failed = false;
-  flaky.DB.prepare = ((sql: string) => {
+  flaky.DB.prepare = (sql) => {
     if (!failed && sql.startsWith("UPDATE video_runs")) {
       failed = true;
       throw new Error("D1 unavailable");
     }
 
     return prepare(sql);
-  }) as typeof flaky.DB.prepare;
+  };
+
   await runApp(flaky, reconcileProcessing);
   await runApp(env(), reconcileProcessing);
   expect(runs("abc")).toEqual([{ instance_id: "abc", outcome: "error", reason: "workflow ended without a final status" }]);
@@ -102,16 +91,16 @@ test("each start gets a new instance id, also after Workflows drops the old inst
   await runApp(env(), startRun("abc", "abc"));
   await runApp(env(), endRun("abc", "done"));
   expect(await runApp(env(), startWorkflow("abc", "theo"))).toBe("started");
-  const [old, next] = runs("abc") as { instance_id: string }[];
+  const [old, next] = runs("abc");
   expect(old.instance_id).toBe("abc");
   expect(next.instance_id).toMatch(/^abc_[0-9a-z]{8}[0-9a-f]{4}$/);
-  expect(Object.keys(instances)).toEqual([next.instance_id]);
+  expect([...instances.keys()]).toEqual([next.instance_id]);
 });
 
 test("concurrent starts of one video create one workflow", async () => {
   const results = await Promise.all([runApp(env(), startWorkflow("abc", "theo")), runApp(env(), startWorkflow("abc", "theo"))]);
   expect(results.sort()).toEqual(["running", "started"]);
-  expect(Object.keys(instances)).toHaveLength(1);
+  expect(instances.size).toBe(1);
   expect(await runApp(env(), startWorkflow("abc", "theo"))).toBe("running");
 });
 
@@ -144,7 +133,7 @@ test("a failed create closes its run, so the next start can try again", async ()
   };
 
   await expect(runApp(env(), startWorkflow("-abc", "theo"))).rejects.toThrow("Workflows unavailable");
-  const [run] = runs("-abc") as { instance_id: string; outcome: string; reason: string }[];
+  const [run] = runs("-abc");
   expect(run.instance_id).toMatch(/^v-abc_/);
   expect([run.outcome, run.reason]).toEqual(["error", "workflow start failed: Workflows unavailable"]);
 });

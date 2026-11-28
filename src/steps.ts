@@ -1,10 +1,17 @@
-import type { WorkflowStep, WorkflowStepConfig, WorkflowStepContext, WorkflowTimeoutDuration } from "cloudflare:workers";
+import type { WorkflowStepConfig, WorkflowStepContext, WorkflowStepEvent, WorkflowTimeoutDuration } from "cloudflare:workers";
 import { Effect, Tracer } from "effect";
 import type { Env } from "./env";
 import { runApp, span, type App } from "./runtime";
 import { Telemetry, randomSpanId, workflowRootSpanId, workflowTraceId, type Attributes } from "./telemetry";
 
 type Parent = { traceId: string; spanId: string };
+
+/** The part of the Workflows step API that the pipeline uses. */
+export interface DurableSteps {
+  do<T extends Rpc.Serializable<T>>(name: string, config: WorkflowStepConfig, callback: (ctx: WorkflowStepContext) => Promise<T>): Promise<T>;
+  /** The payload is what the sender put in the event, so the caller decodes it. */
+  waitForEvent(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }): Promise<WorkflowStepEvent<unknown>>;
+}
 
 /**
  * Durable steps whose bodies are Effects. A Workflow replays its `run` code after each restart, so only step bodies,
@@ -15,11 +22,11 @@ type Parent = { traceId: string; spanId: string };
 export class Steps {
   private constructor(
     private readonly env: Env,
-    private readonly step: WorkflowStep,
+    private readonly step: DurableSteps,
     readonly parent: Parent,
   ) {}
 
-  static async start(env: Env, step: WorkflowStep, instanceId: string): Promise<Steps> {
+  static async start(env: Env, step: DurableSteps, instanceId: string): Promise<Steps> {
     return new Steps(env, step, { traceId: await workflowTraceId(instanceId), spanId: await workflowRootSpanId(instanceId) });
   }
 
@@ -63,8 +70,8 @@ export class Steps {
   }
 
   /** `waitForEvent` makes no span, so the wait is a phase of its own. A timeout ends that span as an error. */
-  waitForEvent<T extends Rpc.Serializable<T>>(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }) {
-    return this.phase(name, () => this.step.waitForEvent<T>(name, options), {}, "workflow.wait");
+  waitForEvent(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }) {
+    return this.phase(name, () => this.step.waitForEvent(name, options), {}, "workflow.wait");
   }
 
   /** Writes the span of the whole run. `startMs` comes from the run's first step. */

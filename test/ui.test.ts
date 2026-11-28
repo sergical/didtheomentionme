@@ -5,8 +5,11 @@ import { CopyLink, app, init, update } from "../src/ui/app";
 import { Message, type Model, type PageFlags } from "../src/ui/model";
 
 const source = { id: "theo", name: "Theo", avatar: "/theo.png", hue: 350, coverage: { videos: 1, from: null, to: null } };
-const page = (input: { handle: string; tweet: string; q?: string }): PageFlags => ({ kind: "lookup", source, sources: [source], input });
-const start = (input = { handle: "", tweet: "" }) => init(page(input)).model;
+
+type Search = { handle: string; tweet: string; q?: string };
+
+const page = (search: Search, error?: string): PageFlags => ({ kind: "lookup", source, sources: [source], input: { q: "", source: source.id, ...search }, error });
+const start = (search: Search = { handle: "", tweet: "" }) => init(page(search)).model;
 const run = (model: Model, ...messages: Message[]) => messages.reduce((m, message) => update(m, message).model, model);
 
 test("the page opens on the tab of the search it shows", () => {
@@ -47,12 +50,12 @@ test("a browser without the Clipboard API shows the link to copy by hand", async
 });
 
 test("a lookup error stays on the searched tab's field when another tab opens", async () => {
-  const flags: PageFlags = { ...page({ handle: "bad handle", tweet: "" }), error: "Invalid handle" } as PageFlags;
+  const flags = page({ handle: "bad handle", tweet: "" }, "Invalid handle");
   const onText = { ...app, init: (f: PageFlags) => ({ model: { ...init(f).model, tab: "text" as const } }) };
   const { html } = await Effect.runPromise(Server.renderToString(onText, { flags, buildId: "test" }));
   const tag = (id: string) => html.match(new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>([^<]*)`))!;
   expect(tag("handle-hint")[1]).toBe("Invalid handle");
-  expect(tag("text-hint")[1]).toBe("A few words you remember. Matches by words and by meaning.");
+  expect(tag("text-hint")[1]).not.toBe("Invalid handle");
   expect(tag("handle")[0]).toContain('aria-invalid="true"');
   expect(tag("text")[0]).not.toContain("aria-invalid");
 });

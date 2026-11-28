@@ -2,9 +2,8 @@
 //   bun meta.ts <framesDir> <secondsCsv> <out.jsonl>
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { chatText, pool, run } from "./workers-ai";
 
-const ACCOUNT = process.env.CF_ACCOUNT_ID ?? "";
-const TOKEN = process.env.CF_TOKEN ?? "";
 const VIDEO_DATE = "2026-10-08";
 
 const READ_PROMPT =
@@ -12,27 +11,7 @@ const READ_PROMPT =
   "@handle | time or date exactly as shown next to the post (e.g. 7h, Sep 24, 1:05 AM · Sep 24, 2026) | replies | reposts | likes | views | first 60 characters of the post text. " +
   "Leave a column empty if it is not shown. Copy characters exactly. Output nothing else.";
 
-async function run(model: string, body: unknown): Promise<any> {
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai/run/${model}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }).catch(() => new Response(null, { status: 599 }));
-
-    if (res.ok) return (await res.json()).result;
-
-    if (attempt >= 4 || (res.status !== 429 && res.status < 500)) return { error: `${res.status} ${(await res.text()).slice(0, 300)}` };
-    await Bun.sleep(1000 * 2 ** attempt);
-  }
-}
-
-async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>) {
-  let next = 0;
-  await Promise.all(Array.from({ length: size }, async () => { while (next < items.length) await fn(items[next++]); }));
-}
-
-const [dir, secondsCsv, out] = process.argv.slice(2);
+const [dir, secondsCsv, out] = Bun.argv.slice(2);
 
 writeFileSync(out, "");
 
@@ -50,7 +29,7 @@ await pool(secondsCsv.split(",").map(Number), 12, async (t) => {
     chat_template_kwargs: { enable_thinking: false },
   });
 
-  for (const line of (r.choices?.[0]?.message?.content ?? "").split("\n")) {
+  for (const line of (chatText(r) ?? "").split("\n")) {
     if (line.trim().startsWith("@") && line.split("|").length >= 6) lines.push({ t, line: line.trim() });
   }
 });
@@ -83,7 +62,8 @@ await pool(posts, 8, async ({ t, line }) => {
   });
 
   const a = r.answers ?? {};
-  const pick = (k: string) => ({ v: a[k]?.value ?? null, p_null: a[k]?.p_null && +a[k].p_null.toFixed(2), conf: a[k]?.confidence && +a[k].confidence.toFixed(2) });
+  const rounded = (n?: number) => n && +n.toFixed(2);
+  const pick = (k: string) => ({ v: a[k]?.value ?? null, p_null: rounded(a[k]?.p_null), conf: rounded(a[k]?.confidence) });
   appendFileSync(out, JSON.stringify({ t, line, posted: pick("posted"), replies: pick("replies"), reposts: pick("reposts"), likes: pick("likes"), views: pick("views"), tokens: r.usage?.input_tokens, error: r.error }) + "\n");
 });
 

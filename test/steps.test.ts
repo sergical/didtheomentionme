@@ -1,18 +1,17 @@
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
-import type { Env } from "../src/env";
 import { Steps } from "../src/steps";
+import { env } from "./bindings";
 import { DSN, captureOtlp, engine, settle } from "./harness";
 
 const config = { retries: { limit: 1, delay: "1 second", backoff: "constant" } } as const;
 
 test("each phase and the run are one span, sent once, across restarts at an event wait and after a phase's last step", async () => {
   const sent = captureOtlp();
-  const env = { SENTRY_DSN: DSN } as unknown as Env;
   const step = engine(["phase:transcribe:end"]);
 
   const run = async () => {
-    const steps = await Steps.start(env, step as never, "replay-instance");
+    const steps = await Steps.start(env({ SENTRY_DSN: DSN }), step, "replay-instance");
     const startMs = await steps.do("mark-processing", config, Effect.sync(() => Date.now()));
     await steps.phase("extract", async (s) => {
       await s.do("extract-start", config, Effect.succeed(0));
@@ -56,7 +55,7 @@ test("each phase and the run are one span, sent once, across restarts at an even
 
 test("a step ends only after Sentry has its spans and logs", async () => {
   const sent = captureOtlp({ latencyMs: 50 });
-  const steps = await Steps.start({ SENTRY_DSN: DSN } as unknown as Env, engine() as never, "flush-instance");
+  const steps = await Steps.start(env({ SENTRY_DSN: DSN }), engine(), "flush-instance");
   await steps.do("store-db", config, Effect.logInfo("Stored 1 mentions"));
   // No waiting: Workflows may end the invocation as soon as the step returns.
   sent.restore();
@@ -67,7 +66,7 @@ test("a step ends only after Sentry has its spans and logs", async () => {
 // The exporter retries a 500 for about 3 seconds per step, and its shutdown timeout caps that at 10 seconds.
 test("a step keeps its result and its error when Sentry rejects the export", async () => {
   const sent = captureOtlp({ status: 500 });
-  const steps = await Steps.start({ SENTRY_DSN: DSN } as unknown as Env, engine() as never, "rejected-instance");
+  const steps = await Steps.start(env({ SENTRY_DSN: DSN }), engine(), "rejected-instance");
   expect(await steps.do("store-db", config, Effect.succeed(3))).toBe(3);
   await expect(steps.do("store-vectors", config, Effect.fail(new Error("Vectorize unavailable")))).rejects.toThrow("Vectorize unavailable");
   sent.restore();

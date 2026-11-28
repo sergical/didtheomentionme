@@ -158,7 +158,7 @@ const discover = (source: (typeof SOURCES)[number]) =>
     })));
 
 export default {
-  fetch(request, env, ctx): Promise<Response> {
+  fetch(request: Request, env, ctx: Pick<ExecutionContext, "waitUntil">): Promise<Response> {
     const url = new URL(request.url);
     const [path, handler] = route(request, env, url, (p) => ctx.waitUntil(p));
 

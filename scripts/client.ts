@@ -15,15 +15,18 @@ export async function buildClient(): Promise<{ build: string; bytes: number }> {
     platform: "browser",
     transform: { define: { "process.env.NODE_ENV": '"production"' } },
   });
+
   const { output } = await bundle.generate({ format: "esm", minify: true, codeSplitting: false });
   await bundle.close();
   const [entry] = output;
+
   if (output.length !== 1 || entry.type !== "chunk") throw new Error(`expected one browser chunk, got ${output.length} files`);
   const build = createHash("sha256").update(entry.code).digest("hex").slice(0, 12);
   await rm(CLIENT_DIR, { recursive: true, force: true });
   await mkdir(CLIENT_DIR, { recursive: true });
   await writeFile(`${CLIENT_DIR}/app-${build}.js`, entry.code);
   await writeFile(`${CLIENT_DIR}/_headers`, "/app-*\n  Cache-Control: public, max-age=31536000, immutable\n");
+
   return { build, bytes: entry.code.length };
 }
 

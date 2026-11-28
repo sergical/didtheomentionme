@@ -53,7 +53,7 @@ describe("a video run sends one trace to Sentry", () => {
   test("with model spans that carry the model, tokens, cost and frame", () => {
     const reader = sent.spans.find((s) => s.attributes["gen_ai.request.model"] === "@cf/qwen/qwen3.8-27b")!;
     expect(reader.attributes).toMatchObject({ "gen_ai.operation.name": "chat", "gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 10, "sentry.description": reader.name });
-    expect(Number(reader.attributes["gen_ai.cost.total_tokens"])).toBeCloseTo((100 * 0.45 + 10 * 3.2) / 1e6, 12);
+    expect(reader.attributes["gen_ai.cost.total_tokens"]).toBeCloseTo((100 * 0.45 + 10 * 3.2) / 1e6, 12);
     expect(String(reader.attributes["app.frame.url"])).toContain(`/frame/${VIDEO}/`);
     expect(String(reader.attributes["gen_ai.input.messages"])).not.toContain("base64");
     const embedding = sent.spans.find((s) => s.attributes["gen_ai.request.model"] === "@cf/baai/bge-m3")!;

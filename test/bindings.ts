@@ -26,7 +26,7 @@ function stored(key: string, blob: Blob): R2ObjectBody {
   };
 }
 
-/** An R2 bucket in memory. */
+/** An R2 bucket in memory. `list` gives pages in key order, and the cursor of a page is its last key. */
 export function bucket(objects = new Map<string, Blob>()): R2Bucket {
   const find = (key: string) => {
     const blob = objects.get(key);
@@ -47,11 +47,15 @@ export function bucket(objects = new Map<string, Blob>()): R2Bucket {
     delete: async (keys) => {
       for (const key of [keys].flat()) objects.delete(key);
     },
-    list: async (options) => ({
-      objects: [...objects].flatMap(([key, blob]) => (key.startsWith(options?.prefix ?? "") ? [stored(key, blob)] : [])),
-      delimitedPrefixes: [],
-      truncated: false,
-    }),
+    list: async (options) => {
+      const keys = [...objects.keys()].filter((key) => key.startsWith(options?.prefix ?? "")).sort();
+      const from = options?.cursor ? keys.indexOf(options.cursor) + 1 : 0;
+      const page = keys.slice(from, from + (options?.limit ?? 1000));
+      const listed = { objects: page.flatMap((key) => find(key) ?? []), delimitedPrefixes: [] };
+      const cursor = page.at(-1);
+
+      return cursor && from + page.length < keys.length ? { ...listed, truncated: true, cursor } : { ...listed, truncated: false };
+    },
     createMultipartUpload: unused("createMultipartUpload"),
     resumeMultipartUpload: unused("resumeMultipartUpload"),
   };

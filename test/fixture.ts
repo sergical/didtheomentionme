@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import type { Env, Json } from "../src/env";
 import { ai, bucket, env as bindings, posts, textsAsked } from "./bindings";
 import { d1, migrated } from "./d1";
-import { engine, settle } from "./harness";
+import { engine, settle, type EventPayload } from "./harness";
 
 // The Workers runtime modules, as far as the pipeline uses them.
 mock.module("cloudflare:workers", () => ({ WorkflowEntrypoint: class {} }));
@@ -86,7 +86,7 @@ export function env(dsn: string, environment?: string, failProcessing = false): 
 }
 
 /** Runs one video through the real pipeline: a first invocation that waits for the extract event, then a replay. */
-export async function runVideo(options: { dsn: string; environment?: string; job?: Json; instanceId?: string; failProcessing?: boolean }) {
+export async function runVideo(options: { dsn: string; environment?: string; job?: EventPayload; instanceId?: string; failProcessing?: boolean }) {
   const step = engine([], new Map([["extract-done", options.job ?? done]]));
   const event = { instanceId: options.instanceId ?? `${VIDEO}_run`, payload: { videoId: VIDEO, source: "theo" } };
   const e = env(options.dsn, options.environment, options.failProcessing);

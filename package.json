@@ -10,6 +10,7 @@
     "lint": "oxlint --deny-warnings",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bun.json",
     "test": "bun test",
+    "test:live": "bun test ./test/live.check.ts",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test"
   },
   "dependencies": {

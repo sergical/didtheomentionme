@@ -35,6 +35,9 @@ export type JobStatus = typeof JobStatus.Type;
 
 const decodeJobStatus = Schema.decodeUnknownOption(Schema.fromJsonString(JobStatus));
 
+/** The job status an event carries, or nothing when the event carries something else. */
+export const decodeJobEvent = Schema.decodeUnknownOption(JobStatus);
+
 export function audioChunkCount(manifest: Manifest): number {
   return Array.isArray(manifest.audioChunks) ? manifest.audioChunks.length : manifest.audioChunks;
 }

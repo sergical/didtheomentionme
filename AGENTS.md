@@ -24,11 +24,12 @@ runs Workers AI models over them.
 - `pnpm install`
 - `pnpm check`: lint, type check and tests, in that order.
 - `pnpm lint`, `pnpm typecheck`, `pnpm test`: one part of it.
+- `LIVE_DSN=<dsn> pnpm test:live`: sends a fake run to a real Sentry project and makes an Issue there. Run it only when asked.
 - `pnpm dev`, `pnpm plan`, `pnpm deploy`: Alchemy against Cloudflare. Run them only when asked.
 
 ## How a change is checked
 
 - Run `pnpm check` before you push.
 - `.github/workflows/check.yml` runs `pnpm check` on every pull request and on each push to `main`.
-- The lint rules are in `.oxlintrc.json` and cover every TypeScript file in the repository.
+- The lint rules are in `.oxlintrc.json`. They cover every TypeScript file except the vendored rules in `tools/`.
 - `tsconfig.json` checks `src/` against the Workers types. `tsconfig.bun.json` adds Bun's types and checks the rest.

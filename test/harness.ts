@@ -105,33 +105,37 @@ export function captureOtlp(options: { latencyMs?: number; status?: number } = {
 /**
  * Runs finished steps from the cache, like the Workflows engine on replay. It suspends at an event that has not
  * come, and once before each step in `evictAt`, like a Worker evicted between two steps. An event that is not in
- * `events` comes with a finished job.
+ * `events` comes with an empty payload.
  */
-export function engine(evictAt: string[] = [], events = new Map<string, Json>()): DurableSteps {
-  const cache = new Map<string, unknown>();
+export function engine(evictAt: string[] = [], events = new Map<string, EventPayload>()): DurableSteps {
+  const results = new Map<string, unknown>();
+  const arrived = new Set<string>();
   const evict = new Set(evictAt);
   const suspended = <T>() => new Promise<T>(() => {});
 
-  // SAFETY: a step or event name is used once in a run, so the value kept under it is the result of the step that
-  // asks for it. Workflows gives a replayed step its stored result on the same promise.
-  const kept = <T>(name: string) => cache.get(name) as T;
+  // SAFETY: a step name is used once in a run, so the value kept under it is the result of the step that asks for
+  // it. Workflows gives a replayed step its stored result the same way.
+  const kept = <T>(name: string) => results.get(name) as T;
 
   return {
     async do<T>(name: string, _config: WorkflowStepConfig, callback: (ctx: WorkflowStepContext) => Promise<T>) {
       if (evict.delete(name)) return suspended<T>();
 
-      if (!cache.has(name)) cache.set(name, await callback({ attempt: 1, config: {}, step: { name, count: 1 } }));
+      if (!results.has(name)) results.set(name, await callback({ attempt: 1, config: {}, step: { name, count: 1 } }));
 
       return kept<T>(name);
     },
-    waitForEvent<T>(name: string, { type }: { type: string }) {
-      if (cache.has(name)) return Promise.resolve({ payload: kept<Readonly<T>>(name), timestamp: new Date(), type });
-      cache.set(name, events.get(name) ?? { state: "done" });
+    waitForEvent(name: string, { type }: { type: string }) {
+      if (arrived.has(name)) return Promise.resolve({ payload: events.get(name) ?? {}, timestamp: new Date(), type });
+      arrived.add(name);
 
       return suspended();
     },
   };
 }
+
+/** What the sender of a Workflows event put in it. */
+export type EventPayload = { [key: string]: Json };
 
 /** Lets exporters and transports send. */
 export const settle = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -9,7 +9,8 @@ type Parent = { traceId: string; spanId: string };
 /** The part of the Workflows step API that the pipeline uses. */
 export interface DurableSteps {
   do<T extends Rpc.Serializable<T>>(name: string, config: WorkflowStepConfig, callback: (ctx: WorkflowStepContext) => Promise<T>): Promise<T>;
-  waitForEvent<T extends Rpc.Serializable<T>>(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }): Promise<WorkflowStepEvent<T>>;
+  /** The payload is what the sender put in the event, so the caller decodes it. */
+  waitForEvent(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }): Promise<WorkflowStepEvent<unknown>>;
 }
 
 /**
@@ -69,8 +70,8 @@ export class Steps {
   }
 
   /** `waitForEvent` makes no span, so the wait is a phase of its own. A timeout ends that span as an error. */
-  waitForEvent<T extends Rpc.Serializable<T>>(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }) {
-    return this.phase(name, () => this.step.waitForEvent<T>(name, options), {}, "workflow.wait");
+  waitForEvent(name: string, options: { type: string; timeout?: WorkflowTimeoutDuration }) {
+    return this.phase(name, () => this.step.waitForEvent(name, options), {}, "workflow.wait");
   }
 
   /** Writes the span of the whole run. `startMs` comes from the run's first step. */

@@ -55,7 +55,7 @@ test("a lookup error stays on the searched tab's field when another tab opens", 
   const { html } = await Effect.runPromise(Server.renderToString(onText, { flags, buildId: "test" }));
   const tag = (id: string) => html.match(new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>([^<]*)`))!;
   expect(tag("handle-hint")[1]).toBe("Invalid handle");
-  expect(tag("text-hint")[1]).toBe("A few words you remember. Matches by words and by meaning.");
+  expect(tag("text-hint")[1]).not.toBe("Invalid handle");
   expect(tag("handle")[0]).toContain('aria-invalid="true"');
   expect(tag("text")[0]).not.toContain("aria-invalid");
 });

@@ -1,6 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { detectFrame, embed, findQuote, readAloudProbability, readPosts, transcribe, type QuoteSearch } from "./ai";
 import { MIN_DURATION_SECONDS, getDetector, getSource, type Detector } from "./config";
 import type { Env, VideoParams } from "./env";
@@ -25,7 +25,7 @@ import {
   withCanonicalHandle,
 } from "./pipeline";
 import { EXTRACT_EVENT } from "./container";
-import { audioChunkCount, checkJob, startJob, type JobStatus, type Manifest } from "./job";
+import { audioChunkCount, checkJob, decodeJobEvent, startJob, type JobStatus, type Manifest } from "./job";
 import { annotate, d1, r2, span, sql, vectorize, type App } from "./runtime";
 import { Steps, type DurableSteps } from "./steps";
 import { Telemetry, errorMessage, frameAttributes } from "./telemetry";
@@ -69,7 +69,6 @@ type ReadAloudResult = "read" | "not_read" | "no_quote" | "no_transcript";
 const key = (videoId: string, path: string) => `videos/${videoId}/${path}`;
 const transcriptKey = (videoId: string) => `transcripts/${videoId}.json`;
 
-/** What a run reads from the event that started it. */
 type RunEvent = Pick<WorkflowEvent<VideoParams>, "payload" | "instanceId">;
 
 /** One video run. It takes the bindings and the step API, and nothing else from the Workflows runtime. */
@@ -196,15 +195,16 @@ export class VideoPipeline {
 
   /**
    * Waits until the job is done or has failed. Only a timeout or a restart uses up a wait. A stop event from a
-   * container that is gone, with the job still running, does not.
+   * container that is gone, with the job still running, does not. An event that carries no job status counts as a
+   * timeout, so the container is asked.
    */
   private async finishedJob(videoId: string, instanceId: string, steps: Steps): Promise<{ job: JobStatus; waits: number }> {
     for (let wait = 0, used = 0; used < MAX_EXTRACT_WAITS; wait++) {
       // Step names must differ, but only a job that outlives its first wait needs a number.
       const retry = wait ? `-${wait}` : "";
 
-      const event = await steps.waitForEvent<JobStatus>(`extract-done${retry}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })
-        .then((event) => event.payload, () => null);
+      const event = await steps.waitForEvent(`extract-done${retry}`, { type: EXTRACT_EVENT, timeout: EXTRACT_WAIT })
+        .then((event) => Option.getOrNull(decodeJobEvent(event.payload)), () => null);
 
       let job = event;
 

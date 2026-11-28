@@ -8,8 +8,8 @@ import type { ExploreData, PageData, PageFlags } from "./model";
 import { EXPLORE_STYLE, STYLE } from "./style";
 import { plural } from "./text";
 
-const escapes: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-const esc = (value: string) => value.replace(/[&<>"']/g, (c) => escapes[c]);
+const escapes = new Map([["&", "&amp;"], ["<", "&lt;"], [">", "&gt;"], ['"', "&quot;"], ["'", "&#39;"]]);
+const esc = (value: string) => value.replace(/[&<>"']/g, (c) => escapes.get(c) ?? c);
 
 export interface HeadData {
   title: string;
@@ -56,8 +56,7 @@ export function documentHead({ title, description, metaDescription, canonical, i
 
 /** The page body: Foldkit's HTML, the page data as JSON for hydration, and the browser script. */
 const body = (flags: PageFlags) =>
-  // Foldkit sends the flags as JSON and rejects a field that is undefined, so a JSON round trip drops those fields.
-  Server.renderToString(app, { flags: JSON.parse(JSON.stringify(flags)) as PageFlags, buildId: CLIENT_BUILD }).pipe(
+  Server.renderToString(app, { flags, buildId: CLIENT_BUILD }).pipe(
     Effect.map(({ html }) => `<body>\n${html}\n<script type="module" src="${clientPath(CLIENT_BUILD)}"></script>\n</body>\n</html>`),
     // A render error is our bug, not the visitor's: it goes to the request span as a defect.
     Effect.orDie,

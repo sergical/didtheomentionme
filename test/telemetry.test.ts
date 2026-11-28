@@ -10,7 +10,7 @@ describe("telemetry model", () => {
     const result = redactImages('{"url":"data:image/jpeg;base64,AAAA"}', attrs["app.frame.url"]);
     expect(JSON.parse(result).url).toBe(attrs["app.frame.url"]);
     expect(attrs["app.frame.youtube_url"]).toEndWith("&t=390s");
-    expect(redactImages("data:image/jpeg;base64,AAAA", undefined)).toBe("[image/jpeg, 0 KB]");
+    expect(redactImages("data:image/jpeg;base64,AAAA")).toBe("[image/jpeg, 0 KB]");
   });
 
   test("prices tokens with Cloudflare's list, and marks estimates", () => {
@@ -52,7 +52,7 @@ describe("OTLP exporter", () => {
   test("an error event carries the exception, its stack, the tags and the trace", () => {
     const err = new Error("boom");
     err.stack = "Error: boom\n    at inner (src/workflow.ts:10:5)\n    at outer (src/index.ts:20:3)";
-    const [header, item, event] = errorEnvelope(err, { "video.id": "abc" }, { traceId: "t".repeat(32), spanId: "s".repeat(16) } as never, 0).trim().split("\n").map((l) => JSON.parse(l));
+    const [header, item, event] = errorEnvelope({ cause: err, attributes: { "video.id": "abc" }, span: { traceId: "t".repeat(32), spanId: "s".repeat(16) }, now: 0 }).trim().split("\n").map((l) => JSON.parse(l));
     expect(header.event_id).toBe(event.event_id);
     expect(item).toEqual({ type: "event" });
     expect(event.exception.values[0]).toMatchObject({ type: "Error", value: "boom" });

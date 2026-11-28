@@ -47,10 +47,20 @@ export function stackFrames(stack: string | undefined) {
   return frames.reverse();
 }
 
+/** One thrown value on its way to Sentry as an Issue. */
+export interface ErrorReport {
+  cause: unknown;
+  attributes: Attributes;
+  /** The span the error happened in, when there is one. */
+  span?: { traceId: string; spanId: string };
+  now?: number;
+  environment?: string;
+}
+
 /** A Sentry error event for one exception, linked to the current span. OTLP has no way to make an Issue. */
-export function errorEnvelope(error: unknown, attributes: Attributes, span: Tracer.AnySpan | undefined, now = Date.now(), environment = "production") {
+export function errorEnvelope({ cause, attributes, span, now = Date.now(), environment = "production" }: ErrorReport) {
   const eventId = crypto.randomUUID().replace(/-/g, "");
-  const err = error instanceof Error ? error : new Error(errorMessage(error));
+  const err = cause instanceof Error ? cause : new Error(errorMessage(cause));
 
   const event = {
     event_id: eventId,
@@ -89,9 +99,9 @@ export function otlpLayer(dsn: string, environment = "production") {
       return Telemetry.of({
         recordSpan: (span) =>
           send(`${otlp}/v1/traces`, JSON.stringify({ resourceSpans: [{ resource: { attributes: entriesToAttributes([["service.name", SERVICE.serviceName], ...Object.entries(SERVICE.attributes)]) }, scopeSpans: [{ scope: { name: "didtheomentionme" }, spans: [otlpSpan(span)] }] }] }), "application/json", auth),
-        reportError: (error, attributes = {}) =>
+        reportError: (cause, attributes = {}) =>
           Effect.flatMap(Effect.option(Effect.currentSpan), (span) =>
-            send(envelope, errorEnvelope(error, attributes, Option.getOrUndefined(span), Date.now(), environment), "application/x-sentry-envelope", {
+            send(envelope, errorEnvelope({ cause, attributes, span: Option.getOrUndefined(span), environment }), "application/x-sentry-envelope", {
               "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${key}, sentry_client=didtheomentionme-otlp/1.0`,
             })),
       });

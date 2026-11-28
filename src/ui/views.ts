@@ -2,48 +2,21 @@
  * The two pages as Foldkit views. The server renders them to HTML, and the browser hydrates the same views, so these
  * functions must stay pure: no `document`, `window` or `navigator`.
  */
-import type { Attribute, HtmlBuilder } from "foldkit/html";
-import type { LookupResult, Match, Reading } from "../lookup";
+import type { Attribute } from "foldkit/html";
+import type { LookupResult, Match } from "../lookup";
 import { UNKNOWN_HANDLE, formatTime } from "../pipeline";
 import { explorePath, resultPath, shareTitle, SITE_ORIGIN } from "../share";
 import { PageBehaviors } from "./behaviors";
-import { Message, tabFor, type Model, type PageFlags, type SourceRef, type Tab } from "./model";
-import { formatDate, hue, plural } from "./text";
-
-type H = HtmlBuilder<Message>;
-
-type Node = ReturnType<H["div"]>;
-
-type Child = Node | string;
+import { exploreView } from "./explore-view";
+import { Message, tabFor, type Model, type PageFlags, type Tab } from "./model";
+import { PLAY, at, creatorPicker, icon, saidFigure, youtube, type Child, type H, type Node } from "./parts";
+import { formatDate, plural } from "./text";
 
 const WORDS = /[\p{L}\p{N}]+/gu;
 
 /** A text match with at least this share of the query words is shown as a close match. */
 const CLOSE_MATCH = 0.75;
 const SHOWN = 10;
-
-export const youtube = (videoId: string, seconds: number) =>
-  `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&t=${Math.floor(seconds)}s`;
-
-type Icon = (h: H) => Node;
-
-const svg = (h: H, viewBox: string, d: string, paint: Attribute<Message>[]) =>
-  h.svg([h.ViewBox(viewBox), h.AriaHidden(true)], [h.path([h.Attribute("d", d), ...paint], [])]);
-
-const stroke = (h: H, width: string): Attribute<Message>[] => [h.Fill("none"), h.Attribute("stroke", "currentColor"), h.Attribute("stroke-width", width),
-  h.Attribute("stroke-linecap", "round"), h.Attribute("stroke-linejoin", "round")];
-
-const PLAY: Icon = (h) => svg(h, "0 0 10 12", "M0 0v12l10-6z", [h.Fill("currentColor")]);
-const CHEVRON: Icon = (h) => svg(h, "0 0 12 12", "M2.5 4.5 6 8l3.5-3.5", stroke(h, "1.75"));
-const CHECK: Icon = (h) => svg(h, "0 0 16 16", "m3.5 8.5 3 3 6-7", stroke(h, "2"));
-
-/** Shorthands for attributes the builder names differently from HTML. */
-const at = (h: H) => ({
-  newTab: [h.Attribute("target", "_blank"), h.Attribute("rel", "noopener noreferrer"), h.Attribute("aria-describedby", "new-tab-hint")],
-  attr: (name: string, value: string | number) => h.Attribute(name, String(value)),
-});
-
-const icon = (h: H, make: Icon) => make(h);
 
 /** The words of `text` that are in `words`, marked. */
 function highlight(h: H, text: string, words: Set<string>): Child[] {
@@ -76,76 +49,67 @@ function fromFirstHit(text: string, words: Set<string>): string {
   return `…${text.slice(space === -1 || space >= hit.index ? hit.index : space + 1)}`;
 }
 
-const face = (h: H, { id, avatar }: SourceRef) =>
-  h.img([h.Class("face"), h.Src(avatar), h.Alt(""), h.Width("96"), h.Height("96"), h.Attribute("referrerpolicy", "no-referrer"), h.Attribute("style", `--hue:${hue(id)}`)]);
-
-export function creatorPicker(h: H, source: SourceRef, sources: SourceRef[], href: (id: string) => string): Child {
-  if (sources.length < 2) return source.name;
-  const { attr } = at(h);
-  const names = sources.map((s) => h.span(s.id === source.id ? [] : [h.AriaHidden(true)], [s.name]));
-
-  const items = sources.map((s) => {
-    const c = s.coverage;
-    const meta = c.videos ? `${plural(c.videos, "video")} · ${formatDate(c.from, false)} to ${formatDate(c.to, false)}` : "First videos in progress";
-    const current = s.id === source.id;
-
-    return h.a([h.Href(href(s.id)), ...(current ? [attr("aria-current", "page")] : [])], [face(h, s), s.name, h.small([], [meta]), ...(current ? [icon(h, CHECK)] : [])]);
-  });
-
-  return h.details([h.Class("pick")], [
-    h.summary([], [face(h, source), h.span([h.Class("names")], names), icon(h, CHEVRON)]),
-    h.nav([h.Class("menu"), h.AriaLabel("Creators")], items),
-  ]);
-}
-
-const READING_CAPTION: Record<Reading, string> = { all: "read it aloud", part: "read part of it aloud", comment: "talked about it" };
-
-export const saidFigure = (h: H, sourceName: string, videoId: string, { at: time, quote, reading }: { at: number; quote: string; reading: Reading }) =>
-  h.figure([h.Class(`said${reading === "comment" ? " comment" : ""}`)], [
-    h.blockquote([], [quote]),
-    h.figcaption([], [`${sourceName} ${READING_CAPTION[reading]} at `, h.a([...at(h).newTab, h.Href(youtube(videoId, time))], [formatTime(time)])]),
-  ]);
-
 const switchTab = (h: H, tab: Tab, label: string) => h.button([h.Type("button"), h.Class("switch"), h.OnClick(Message.ClickedSwitchTab({ tab }))], [label]);
 
-function verdict(h: H, result: LookupResult, close: Match[], loose: Match[]): Node {
-  const { name } = result.source;
-  const { videos, from, to } = result.coverage;
-  const about = result.query ? `“${result.query}”` : `@${result.handle}`;
-
-  const section = (kind: string, answer: string, detail: Child[]) =>
-    h.section([h.Class(`verdict ${kind}`)], [h.p([h.Class("about")], [about]), h.h2([], [answer]), h.p([], detail)]);
-
-  if (close.length === 0) {
-    if (loose.length) return section("maybe", "Not exactly.", [`No post has most of these words. ${plural(loose.length, "post")} ${loose.length === 1 ? "has" : "have"} some of them.`]);
-
-    if (videos === 0) return section("no", "Not yet.", [`No ${name} videos are indexed yet.`]);
-
-    const next: Child[] = result.query
-      ? ["Try other words, or ", switchTab(h, "handle", "search by handle"), "."]
-      : ["Handle cropped out of the screenshot? ", switchTab(h, "text", "Search by words from the post"), "."];
-
-    return section("no", "Not yet.", [`Nothing in the ${plural(videos, "video")} from ${formatDate(from, false)} to ${formatDate(to)}. `, ...next]);
-  }
-
+/** What the creator did with the posts they showed: read them, talked about them, or neither. */
+function saidClause(close: Match[]): string {
   const read = close.filter((m) => m.readAloud && m.readAloud.reading !== "comment").length;
   const talked = close.filter((m) => m.readAloud?.reading === "comment").length;
   const one = close.length === 1;
-  const shown = result.query ? `${name} showed ${plural(close.length, "post")} with that text` : `${name} showed ${one ? "your post" : `${close.length} of your posts`}`;
   const count = (n: number) => (n < close.length ? String(n) : one ? "it" : close.length === 2 ? "both" : "every one");
   const readCount = one && close[0].readAloud?.reading === "part" ? "part of it" : count(read);
   const notRead = `but did not read ${one ? "it" : "them"} aloud.`;
 
-  const said = read && talked
-    ? `, read ${readCount} aloud and talked about ${count(talked)}.`
-    : read ? ` and read ${readCount} aloud.`
-    : talked ? ` and talked about ${count(talked)}, ${notRead}`
-    : `, ${notRead}`;
+  if (read && talked) return `, read ${readCount} aloud and talked about ${count(talked)}.`;
 
-  return section("yes", "Yes.", [shown + said]);
+  if (read) return ` and read ${readCount} aloud.`;
+
+  return talked ? ` and talked about ${count(talked)}, ${notRead}` : `, ${notRead}`;
 }
 
-function card(h: H, m: Match, i: number, words: Set<string>, sourceName: string, showText: boolean, eager: boolean): Node {
+/** The headline of a result: whether the creator showed the post, and one line of detail. */
+interface Verdict {
+  kind: "yes" | "maybe" | "no";
+  answer: string;
+  detail: Child[];
+}
+
+/** The answer when no post is a close match, and what to try next. */
+function noMatch(h: H, result: LookupResult, loose: Match[]): Verdict {
+  const { videos, from, to } = result.coverage;
+
+  if (loose.length) return { kind: "maybe", answer: "Not exactly.", detail: [`No post has most of these words. ${plural(loose.length, "post")} ${loose.length === 1 ? "has" : "have"} some of them.`] };
+
+  if (videos === 0) return { kind: "no", answer: "Not yet.", detail: [`No ${result.source.name} videos are indexed yet.`] };
+
+  const next: Child[] = result.query
+    ? ["Try other words, or ", switchTab(h, "handle", "search by handle"), "."]
+    : ["Handle cropped out of the screenshot? ", switchTab(h, "text", "Search by words from the post"), "."];
+
+  return { kind: "no", answer: "Not yet.", detail: [`Nothing in the ${plural(videos, "video")} from ${formatDate(from, false)} to ${formatDate(to)}. `, ...next] };
+}
+
+function verdict(h: H, result: LookupResult, close: Match[], loose: Match[]): Node {
+  const { name } = result.source;
+  const about = result.query ? `“${result.query}”` : `@${result.handle}`;
+  const shown = result.query ? `${name} showed ${plural(close.length, "post")} with that text` : `${name} showed ${close.length === 1 ? "your post" : `${close.length} of your posts`}`;
+  const yes = (): Verdict => ({ kind: "yes", answer: "Yes.", detail: [shown + saidClause(close)] });
+  const { kind, answer, detail } = close.length ? yes() : noMatch(h, result, loose);
+
+  return h.section([h.Class(`verdict ${kind}`)], [h.p([h.Class("about")], [about]), h.h2([], [answer]), h.p([], detail)]);
+}
+
+/** What every card of one list of matches shares. */
+interface MatchList {
+  /** The words of a text search, to highlight. */
+  words: Set<string>;
+  sourceName: string;
+  showText: boolean;
+  /** The first cards of the list load their frames at once. */
+  eager: boolean;
+}
+
+function card(h: H, m: Match, i: number, { words, sourceName, showText, eager }: MatchList): Node {
   const { newTab } = at(h);
 
   const seen = m.times.map((t, n) =>
@@ -173,7 +137,13 @@ function card(h: H, m: Match, i: number, words: Set<string>, sourceName: string,
 const more = (h: H, summary: string, body: Node, open = false) =>
   h.details([h.Class("more"), ...(open ? [h.Open(true)] : [])], [h.summary([], [summary]), body]);
 
-function shareControls(h: H, model: Model, url: string, title: string): Node {
+/** The result's own URL, and the sentence that goes with it. */
+interface Share {
+  url: string;
+  title: string;
+}
+
+function shareControls(h: H, model: Model, { url, title }: Share): Node {
   const intent = `https://x.com/intent/post?${new URLSearchParams({ text: `${title} Found the receipts.`, url })}`;
   const copied = (button: "share" | "copy", label: string) => (model.copied[button] ? "✓ Copied" : label);
 
@@ -185,18 +155,18 @@ function shareControls(h: H, model: Model, url: string, title: string): Node {
   ]);
 }
 
-function results(h: H, model: Model, result: LookupResult, url: string, title: string): Child[] {
+function results(h: H, model: Model, result: LookupResult, share: Share): Child[] {
   const words = new Set(result.query ? result.query.toLowerCase().match(WORDS) : []);
   const isClose = (m: Match) => !result.query || (m.overlap ?? 0) >= CLOSE_MATCH;
   const close = result.matches.filter(isClose);
   const loose = result.matches.filter((m) => !isClose(m));
 
   const cards = (list: Match[], eager = false) =>
-    h.ol([h.Class("matches")], list.map((m, i) => card(h, m, i, words, result.source.name, Boolean(result.query || result.tweet), eager)));
+    h.ol([h.Class("matches")], list.map((m, i) => card(h, m, i, { words, sourceName: result.source.name, showText: Boolean(result.query || result.tweet), eager })));
 
   return [
     verdict(h, result, close, loose),
-    shareControls(h, model, url, title),
+    shareControls(h, model, share),
     ...(result.tweet ? [h.p([h.Class("notice")], [`Searched for the post by @${result.tweet.handle}: “${result.tweet.text}”`])] : []),
     ...(result.tweetError ? [h.p([h.Class("notice")], [result.tweetError])] : []),
     ...(close.length ? [cards(close.slice(0, SHOWN), true)] : []),
@@ -288,187 +258,12 @@ function lookupView(h: H, model: Model, data: Extract<PageFlags, { kind: "lookup
       ]),
       field(h, source.id, input, error),
     ]),
-    ...(result ? results(h, model, result, SITE_ORIGIN + path, title) : []),
+    ...(result ? results(h, model, result, { url: SITE_ORIGIN + path, title }) : []),
     h.span([h.Class("sr-only"), h.Id("new-tab-hint")], ["Opens in a new tab."]),
     h.footer([], [
       h.p([], [`An image model looks for X posts in the frames of each video. A second model reads them, and the transcript shows if ${name} read them aloud. Results can miss posts or misread a handle.`]),
       h.p([], [h.a([h.Href(explorePath(source.id))], [`Explore every ${name} video we scanned`]), "."]),
       h.p([], [`Not affiliated with ${name}.`]),
-    ]),
-  ]);
-}
-
-const number = (n: number) => n.toLocaleString("en-US");
-const percent = (part: number, whole: number) => (whole ? Math.round((100 * part) / whole) : 0);
-const handleOf = (handle: string) => (handle.startsWith("@") ? handle : `@${handle}`);
-const searchLink = (handle: string, source: string) => resultPath({ handle: handle.replace(/^@/, ""), tweet: "" }, source);
-const minutes = (seconds: number) => (seconds < 60 ? `${seconds} s` : `${Math.round(seconds / 60)} min`);
-const ACCOUNTS_PER_VIDEO = 24;
-
-type Explore = Extract<PageFlags, { kind: "explore" }>;
-
-function stats(h: H, { totals }: Explore): Node {
-  const tiles: [string, string][] = [
-    ["Videos scanned", number(totals.videos)],
-    ["Hours of video", number(Math.round(totals.seconds / 3600))],
-    ["Posts on screen", number(totals.shown)],
-    ["Read aloud", `${percent(totals.aloud, totals.shown)}%`],
-  ];
-
-  return h.dl([h.Class("stats")], tiles.map(([label, value]) => h.div([], [h.dt([], [label]), h.dd([], [value])])));
-}
-
-function accounts(h: H, data: Explore): Node[] {
-  const { accounts: list, source, xHandle } = data;
-
-  if (list.length === 0) return [];
-  const max = list[0].shown;
-
-  const rows = list.map((a, i) => {
-    const handle = handleOf(a.handle);
-    const own = a.handleNorm === xHandle.toLowerCase() ? [h.span([h.Class("badge")], ["Own account"])] : [];
-    const aloud = a.aloud ? ` · ${number(a.aloud)} read aloud` : "";
-
-    return h.li([], [h.a([h.Href(searchLink(a.handle, source.id))], [
-      h.span([h.Class("rank")], [String(i + 1)]),
-      h.span([h.Class("avatar"), h.Attribute("style", `--hue:${hue(handle)}`), h.AriaHidden(true)], [handle.charAt(1).toUpperCase()]),
-      h.span([h.Class("who-line")], [h.b([], [handle]), ...own]),
-      h.span([h.Class("count")], [number(a.shown), h.span([h.Class("sr-only")], [" times on screen"])]),
-      h.span([h.Class("meta")], [
-        h.span([h.Class("track"), h.AriaHidden(true)], [h.span([h.Attribute("style", `--w:${((100 * a.shown) / max).toFixed(1)}%`)], [])]),
-        `${plural(a.videos, "video")}${aloud}`,
-      ]),
-    ])]);
-  });
-
-  const cross = data.crossovers.filter((c) => c.showed || c.shownBy).map((c) =>
-    h.p([h.Class("crossover")], [
-      `${source.name} showed `, h.a([h.Href(searchLink(c.other.xHandle, source.id))], [`@${c.other.xHandle}`]), ` ${plural(c.showed, "time")}. `,
-      `${c.other.name} showed `, h.a([h.Href(searchLink(xHandle, c.other.id))], [`@${xHandle}`]), ` ${plural(c.shownBy, "time")}.`,
-    ]));
-
-  return [h.section([h.AriaLabelledBy("accounts")], [
-    h.h2([h.Id("accounts")], ["Most shown accounts"]),
-    h.p([h.Class("sub")], ["Times each account was on screen across every video. Open one to see each moment."]),
-    h.ol([h.Class("ranks")], rows),
-    ...cross,
-  ])];
-}
-
-function position(h: H, data: Explore): Node[] {
-  const bins = data.position;
-  const total = bins.reduce((a, b) => a + b, 0);
-
-  if (total === 0) return [];
-  const max = Math.max(...bins);
-  const peak = bins.indexOf(max);
-  const firstHalf = percent(bins.slice(0, bins.length / 2).reduce((a, b) => a + b, 0), total);
-  const lead = firstHalf >= 50 ? `${firstHalf}% of posts show up in the first half of a video.` : `${100 - firstHalf}% of posts show up in the second half of a video.`;
-  const step = 100 / bins.length;
-
-  const cols = bins.map((n, i) =>
-    h.li([h.Class(`col${i === peak ? " peak" : ""}`), h.Tabindex(0), h.AriaLabel(`${i * step}–${(i + 1) * step}% of the way through: ${plural(n, "post")}`), h.Attribute("style", `--h:${((100 * n) / max).toFixed(1)}%`)], [
-      h.b([h.AriaHidden(true)], [number(n)]),
-      h.span([], []),
-    ]));
-
-  return [h.section([h.AriaLabelledBy("when")], [
-    h.h2([h.Id("when")], ["When posts show up"]),
-    h.p([h.Class("sub")], [`${lead} Each bar is one tenth of a video.`]),
-    h.ol([h.Class("hist")], cols),
-    h.div([h.Class("axis"), h.AriaHidden(true)], [h.span([], ["Start"]), h.span([], ["Middle"]), h.span([], ["End"])]),
-  ])];
-}
-
-function longReads(h: H, { longReads: list, source }: Explore): Node[] {
-  if (list.length === 0) return [];
-  const { newTab } = at(h);
-
-  const cards = list.map((r) => {
-    const known = r.handle !== UNKNOWN_HANDLE;
-    const name = r.displayName || (known ? r.handle.replace(/^@/, "") : "Unknown account");
-    const link = youtube(r.videoId, r.firstSeen);
-
-    return h.li([h.Class("match")], [
-      h.a([h.Class("frame"), ...newTab, h.Href(link), h.Tabindex(-1), h.AriaHidden(true)], [h.img([h.Src(`/frame/${r.videoId}/${r.frameSecond}.jpg`), h.Alt(""), h.Loading("lazy"), h.Decoding("async")])]),
-      h.div([h.Class("body")], [
-        h.div([h.Class("video")], [h.a([...newTab, h.Href(link)], [r.title ?? r.videoId])]),
-        h.p([h.Class("who")], [h.b([], [name]), ...(known ? [h.span([], [r.handle])] : [])]),
-        saidFigure(h, source.name, r.videoId, { at: r.readAt, quote: r.quote, reading: r.reading }),
-        h.p([h.Class("times")], [h.span([], [`On screen for ${minutes(r.lastSeen - r.firstSeen)} from`]), h.a([h.Class("chip"), ...newTab, h.Href(link)], [icon(h, PLAY), formatTime(r.firstSeen)])]),
-      ]),
-    ]);
-  });
-
-  return [h.section([h.AriaLabelledBy("long")], [
-    h.h2([h.Id("long")], ["Read aloud and kept on screen"]),
-    h.p([h.Class("sub")], [`The posts ${source.name} read out and stayed on the longest.`]),
-    h.ol([h.Class("reads")], cards),
-  ])];
-}
-
-function videoList(h: H, data: Explore): Node {
-  const { source, sort } = data;
-  const max = Math.max(1, ...data.videos.map((v) => v.shown));
-
-  const sortLink = (to: "newest" | "posts", label: string) =>
-    h.a([h.Href(`${explorePath(source.id, to)}#videos`), ...(sort === to ? [h.Attribute("aria-current", "true")] : [])], [label]);
-
-  const rows = data.videos.map((v) => {
-    const count: Child[] = v.shown ? [number(v.shown), h.span([h.Class("sr-only")], [" posts"])] : [h.span([h.Class("none")], ["None"])];
-    const meta: Child[] = [h.time([h.Attribute("datetime", v.publishedAt ?? "")], [formatDate(v.publishedAt)])];
-
-    for (const part of [v.duration ? formatTime(v.duration) : "", v.aloud ? `${number(v.aloud)} read aloud` : ""]) if (part) meta.push(` · ${part}`);
-
-    const shown = v.accounts.slice(0, ACCOUNTS_PER_VIDEO).map((a) =>
-      h.li([], [h.a([h.Href(searchLink(a.handle, source.id))], [handleOf(a.handle), ...(a.shown > 1 ? [" ", h.small([], [`×${a.shown}`])] : [])])]));
-
-    const rest = v.accounts.length - shown.length;
-    const watch = h.a([...at(h).newTab, h.Href(youtube(v.id, 0))], ["Watch on YouTube"]);
-
-    const body = v.accounts.length
-      ? [h.ul([h.Class("handles"), h.AriaLabel("Accounts on screen")], shown), h.p([], [`${plural(v.accounts.length, "account")} on screen${rest > 0 ? `, the ${rest} least shown not listed` : ""}. `, watch])]
-      : [h.p([], ["No X posts found on screen. ", watch])];
-
-    return h.li([], [h.details([], [
-      h.summary([], [
-        h.span([h.Class("title")], [v.title ?? v.id]),
-        h.span([h.Class("count")], count),
-        h.span([h.Class("meta")], [
-          h.span([h.Class("track"), h.AriaHidden(true)], v.shown ? [h.span([h.Attribute("style", `--w:${((100 * v.shown) / max).toFixed(1)}%`)], [])] : []),
-          h.span([], meta),
-        ]),
-      ]),
-      h.div([h.Class("opened")], body),
-    ])]);
-  });
-
-  return h.section([h.AriaLabelledBy("videos")], [
-    h.h2([h.Id("videos")], ["Every video"]),
-    h.p([h.Class("sub")], [`${plural(data.videos.length, "video")} and the posts on screen in each. Open one to see the accounts.`]),
-    h.nav([h.Class("sorts"), h.AriaLabel("Sort videos")], [sortLink("newest", "Newest"), sortLink("posts", "Most posts")]),
-    h.ol([h.Class("videos")], rows),
-  ]);
-}
-
-/** The explore page. */
-function exploreView(h: H, data: Explore): Node {
-  const { source, totals } = data;
-  const range = totals.videos ? `, ${formatDate(totals.from, false)} to ${formatDate(totals.to)}` : "";
-
-  return h.main([h.Class("explore"), h.OnMount(PageBehaviors())], [
-    h.a([h.Class("back"), h.Href(resultPath({ handle: "", tweet: "" }, source.id))], ["← Search for your posts"]),
-    h.h1([], ["What did ", creatorPicker(h, source, data.sources, (id) => explorePath(id, data.sort)), " ", h.em([], ["show?"])]),
-    h.p([h.Class("lede")], [`Every X post we found on screen in ${plural(totals.videos, `${source.name} video`)}${range}.`]),
-    stats(h, data),
-    ...accounts(h, data),
-    ...position(h, data),
-    ...longReads(h, data),
-    videoList(h, data),
-    h.span([h.Class("sr-only"), h.Id("new-tab-hint")], ["Opens in a new tab."]),
-    h.footer([], [
-      h.p([], ["An image model finds X posts in one frame per second of each video, and a second model reads them. Counts can include misread handles."]),
-      h.p([], [`Not affiliated with ${source.name}.`]),
     ]),
   ]);
 }

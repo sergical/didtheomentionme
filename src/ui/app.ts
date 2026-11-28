@@ -1,5 +1,5 @@
 /** The pages as one Foldkit app: the model, what each message changes, and the commands that talk to the browser. */
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import * as Command from "foldkit/command";
 import * as Dom from "foldkit/dom";
 import type { Return } from "foldkit/update";
@@ -40,7 +40,7 @@ export const ShareLink = Command.define("ShareLink", {
       if (!navigator.share) return yield* copyMessage(url, "share");
 
       const outcome = yield* Effect.promise(() =>
-        navigator.share({ title, text: title, url }).then(() => "shared", (err: unknown) => ((err as Error)?.name === "AbortError" ? "closed" : "failed")));
+        navigator.share({ title, text: title, url }).then(() => "shared", (cause: unknown) => (cause instanceof Error && cause.name === "AbortError" ? "closed" : "failed")));
 
       return outcome === "failed" ? yield* copyMessage(url, "share") : Message.Shared();
     }),
@@ -85,42 +85,34 @@ export const init = (page: PageFlags): Return<Model, Message> => ({
 });
 
 export function update(model: Model, message: Message): Return<Model, Message> {
-  switch (message._tag) {
-    case "ChangedTab":
-      return { model: { ...model, tab: message.tab } };
-    case "ClickedTabLabel":
-      return { model: { ...model, tab: message.tab }, commands: [FocusEntry({ tab: message.tab, fromLabel: true })] };
-    case "ClickedSwitchTab":
-      return { model: { ...model, tab: message.tab }, commands: [FocusEntry({ tab: message.tab, fromLabel: false })] };
-    case "ClickedShare":
-      return { model, commands: [ShareLink({ url: message.url, title: message.title })] };
-    case "ClickedCopy":
-      return { model, commands: [CopyLink({ url: message.url, button: "copy" })] };
-    case "CopiedLink": {
+  const unchanged = () => ({ model });
+
+  return Match.valueTags(message, {
+    ChangedTab: ({ tab }) => ({ model: { ...model, tab } }),
+    ClickedTabLabel: ({ tab }) => ({ model: { ...model, tab }, commands: [FocusEntry({ tab, fromLabel: true })] }),
+    ClickedSwitchTab: ({ tab }) => ({ model: { ...model, tab }, commands: [FocusEntry({ tab, fromLabel: false })] }),
+    ClickedShare: ({ url, title }) => ({ model, commands: [ShareLink({ url, title })] }),
+    ClickedCopy: ({ url }) => ({ model, commands: [CopyLink({ url, button: "copy" })] }),
+    CopiedLink: ({ button }) => {
       const copies = model.copies + 1;
 
       return {
-        model: { ...model, copied: { ...model.copied, [message.button]: copies }, copies, status: "Result link copied." },
-        commands: [ResetCopyLater({ button: message.button, copy: copies })],
+        model: { ...model, copied: { ...model.copied, [button]: copies }, copies, status: "Result link copied." },
+        commands: [ResetCopyLater({ button, copy: copies })],
       };
-    }
+    },
+    FailedCopy: ({ url }) => ({ model: { ...model, statusVisible: true, status: `Copy this link: ${url}` } }),
+    ResetCopy: ({ button, copy }) => {
+      if (model.copied[button] !== copy) return { model };
 
-    case "FailedCopy":
-      return { model: { ...model, statusVisible: true, status: `Copy this link: ${message.url}` } };
-    case "ResetCopy":
-      if (model.copied[message.button] !== message.copy) return { model };
-
-      return { model: { ...model, copied: { ...model.copied, [message.button]: 0 }, status: message.copy === model.copies ? "" : model.status } };
-    case "SubmittedSearch":
-      return { model: { ...model, busy: true } };
-    case "ShowedPage":
-      return { model: { ...model, busy: false } };
-    case "DetectedSharing":
-      return { model: { ...model, hideCopy: message.hideCopy } };
-    case "Shared":
-    case "Focused":
-      return { model };
-  }
+      return { model: { ...model, copied: { ...model.copied, [button]: 0 }, status: copy === model.copies ? "" : model.status } };
+    },
+    SubmittedSearch: () => ({ model: { ...model, busy: true } }),
+    ShowedPage: () => ({ model: { ...model, busy: false } }),
+    DetectedSharing: ({ hideCopy }) => ({ model: { ...model, hideCopy } }),
+    Shared: unchanged,
+    Focused: unchanged,
+  });
 }
 
 /** What the server renders and the browser hydrates. */

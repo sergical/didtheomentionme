@@ -2,9 +2,41 @@ import { Effect, Queue, Stream } from "effect";
 import * as Mount from "foldkit/mount";
 import { Message } from "./model";
 
-type Listener = [EventTarget, string, (event: Event) => void];
-
 type Out = Extract<Message, { _tag: "SubmittedSearch" | "ShowedPage" | "DetectedSharing" }>;
+
+/** Listens until the scope closes: every listener takes `signal`, and the finalizer aborts it. */
+const behaviors = (element: Element, emit: (message: Out) => void) =>
+  Effect.gen(function* () {
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    yield* Effect.addFinalizer(() => Effect.sync(() => controller.abort()));
+
+    const pick = element.querySelector<HTMLDetailsElement>(".pick");
+
+    if (pick) {
+      document.addEventListener("click", (e) => { if (!(e.target instanceof Node && pick.contains(e.target))) pick.open = false; }, { signal });
+      pick.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape" || !pick.open) return;
+        pick.open = false;
+        pick.querySelector("summary")?.focus();
+      }, { signal });
+    }
+
+    if (!element.querySelector(".search")) return;
+
+    emit(Message.DetectedSharing({ hideCopy: Boolean(navigator.share) && matchMedia("(pointer: coarse)").matches }));
+
+    for (const form of element.querySelectorAll("form")) form.addEventListener("submit", () => emit(Message.SubmittedSearch()), { signal });
+    let switchingCreator = false;
+    window.addEventListener("pageshow", () => {
+      switchingCreator = false;
+      emit(Message.ShowedPage());
+    }, { signal });
+    window.addEventListener("pageswap", (e) => { if (!switchingCreator) e.viewTransition?.skipTransition(); }, { signal });
+
+    for (const link of element.querySelectorAll(".pick .menu a")) link.addEventListener("click", () => { switchingCreator = true; }, { signal });
+  });
 
 /**
  * The page behaviors that are about the browser, not the model: the creator picker closes on an outside click or
@@ -13,43 +45,5 @@ type Out = Extract<Message, { _tag: "SubmittedSearch" | "ShowedPage" | "Detected
  */
 export const PageBehaviors = Mount.defineStream("PageBehaviors", {
   messages: [Message.SubmittedSearch, Message.ShowedPage, Message.DetectedSharing],
-  execute: ({ element }) =>
-    Stream.callback<Out>((queue) =>
-      Effect.gen(function* () {
-        const listeners: Listener[] = [];
-
-        const on = (target: EventTarget, type: string, f: (event: Event) => void) => {
-          target.addEventListener(type, f);
-          listeners.push([target, type, f]);
-        };
-
-        yield* Effect.addFinalizer(() => Effect.sync(() => listeners.forEach(([t, type, f]) => t.removeEventListener(type, f))));
-        const emit = (message: Out) => void Queue.offerUnsafe(queue, message);
-
-        const pick = element.querySelector<HTMLDetailsElement>(".pick");
-
-        if (pick) {
-          on(document, "click", (e) => { if (!pick.contains(e.target as Node)) pick.open = false; });
-          on(pick, "keydown", (e) => {
-            if ((e as KeyboardEvent).key !== "Escape" || !pick.open) return;
-            pick.open = false;
-            pick.querySelector("summary")?.focus();
-          });
-        }
-
-        if (!element.querySelector(".search")) return;
-
-        emit(Message.DetectedSharing({ hideCopy: Boolean(navigator.share) && matchMedia("(pointer: coarse)").matches }));
-
-        for (const form of element.querySelectorAll("form")) on(form, "submit", () => emit(Message.SubmittedSearch()));
-        let switchingCreator = false;
-        on(window, "pageshow", () => {
-          switchingCreator = false;
-          emit(Message.ShowedPage());
-        });
-        on(window, "pageswap", (e) => { if (!switchingCreator) (e as Event & { viewTransition?: ViewTransition }).viewTransition?.skipTransition(); });
-
-        for (const link of element.querySelectorAll(".pick .menu a")) on(link, "click", () => { switchingCreator = true; });
-      }),
-    ),
+  execute: ({ element }) => Stream.callback<Out>((queue) => behaviors(element, (message) => void Queue.offerUnsafe(queue, message))),
 });

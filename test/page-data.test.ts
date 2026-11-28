@@ -18,13 +18,17 @@ function seeded(seed: number) {
 
 const TEXTS = ["", "theo", "Théo – t3.gg 🚀", "日本語のポスト", `<b>"quoted" & 'single'</b>`, "line one\nline two", "x".repeat(300)];
 
-/** Values of every kind a page holds, made without the schema, so a field the schema forgets is still in the input. */
+/**
+ * Values of every kind a page holds, made without the schema, so a field the schema forgets is still in the input.
+ * An optional field is left out, set to undefined, or set to a value: the Worker does all three.
+ */
 function generator(next: () => number) {
   const int = (max = 5000) => Math.floor(next() * max);
   const pick = <T>(items: readonly T[]): T => items[int(items.length)];
   const text = () => pick(TEXTS);
   const orNull = <T>(make: () => T) => (next() < 0.3 ? null : make());
-  const orAbsent = <T>(make: () => T) => (next() < 0.3 ? undefined : make());
+  const leftOut = () => next() < 0.3;
+  const orUndefined = <T>(make: () => T) => (next() < 0.3 ? undefined : make());
   const list = <T>(make: () => T) => Array.from({ length: int(4) }, make);
   const coverage = () => ({ videos: int(), from: orNull(text), to: orNull(text) });
   const source = (): SourceRef => ({ id: text(), name: text(), avatar: text(), hue: int(360), coverage: coverage() });
@@ -33,16 +37,25 @@ function generator(next: () => number) {
   const match = (): Match => ({
     videoId: text(), title: orNull(text), publishedAt: orNull(text), handle: text(), displayName: orNull(text), text: text(),
     firstSeen: int(), lastSeen: int(), times: list(int), frameUrl: text(), exact: next() < 0.5,
-    readAloud: orNull(() => ({ at: int(), quote: text(), reading: reading() })), overlap: orAbsent(next),
+    readAloud: orNull(() => ({ at: int(), quote: text(), reading: reading() })),
+    ...(leftOut() ? {} : { overlap: orUndefined(next) }),
   });
 
   const result = (): LookupResult => ({
-    source: { id: text(), name: text() }, handle: orNull(text), query: orAbsent(text), coverage: coverage(),
-    tweet: orAbsent(() => ({ id: text(), handle: text(), text: text(), createdAt: orNull(text) })), tweetError: orAbsent(text), matches: list(match),
+    source: { id: text(), name: text() }, handle: orNull(text), coverage: coverage(), matches: list(match),
+    ...(leftOut() ? {} : { query: orUndefined(text) }),
+    ...(leftOut() ? {} : { tweet: orUndefined(() => ({ id: text(), handle: text(), text: text(), createdAt: orNull(text) })) }),
+    ...(leftOut() ? {} : { tweetError: orUndefined(text) }),
   });
 
-  const input = (): LookupInput => ({ handle: text(), tweet: text(), q: orAbsent(text), source: orAbsent(text) });
-  const lookup = (): PageFlags => ({ kind: "lookup", source: source(), sources: list(source), input: input(), result: orAbsent(result), error: orAbsent(text) });
+  // The route always names the creator in a page's input.
+  const input = () => ({ handle: text(), tweet: text(), source: text(), ...(leftOut() ? {} : { q: orUndefined(text) }) }) satisfies LookupInput;
+
+  const lookup = (): PageFlags => ({
+    kind: "lookup", source: source(), sources: list(source), input: input(),
+    ...(leftOut() ? {} : { result: orUndefined(result) }),
+    ...(leftOut() ? {} : { error: orUndefined(text) }),
+  });
 
   const explore = (): ExploreData => ({
     source: source(), sources: list(source), xHandle: text(), sort: pick(["newest", "posts"] as const),
